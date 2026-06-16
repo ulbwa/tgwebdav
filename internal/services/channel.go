@@ -182,16 +182,19 @@ func (s *channelService) ReevaluateAvailability(ctx context.Context) error {
 	return nil
 }
 
-// PickForUpload returns an available channel that has at least one enabled
-// member bot, round-robining across the eligible channels via an atomic
-// counter. When no such channel exists it returns domain.ErrNoBot.
+// PickForUpload returns an available channel that has at least one member bot
+// usable right now (enabled and not rate-limited), round-robining across the
+// eligible channels via an atomic counter. When no such channel exists it
+// returns domain.ErrNoBot. A channel whose only member bots are all parked
+// (disabled or rate-limited) is skipped so the subsequent bot pick does not fail
+// with ErrNoBot while another channel still has a usable bot.
 func (s *channelService) PickForUpload(ctx context.Context) (*domain.Channel, error) {
 	eligible, err := s.eligibleChannels(ctx)
 	if err != nil {
 		return nil, err
 	}
 	if len(eligible) == 0 {
-		return nil, fmt.Errorf("no channel with an available member bot: %w", domain.ErrNoBot)
+		return nil, fmt.Errorf("no channel with a usable member bot: %w", domain.ErrNoBot)
 	}
 
 	idx := int(s.rr.Add(1)-1) % len(eligible)
@@ -200,7 +203,8 @@ func (s *channelService) PickForUpload(ctx context.Context) (*domain.Channel, er
 }
 
 // eligibleChannels returns the channels that are available and have at least one
-// enabled member bot.
+// member bot that is usable right now (enabled and not rate-limited via
+// UnavailableUntil).
 func (s *channelService) eligibleChannels(ctx context.Context) ([]domain.Channel, error) {
 	channels, err := s.repos.Channels.List(ctx)
 	if err != nil {
@@ -211,9 +215,10 @@ func (s *channelService) eligibleChannels(ctx context.Context) ([]domain.Channel
 	if err != nil {
 		return nil, fmt.Errorf("list bots: %w", err)
 	}
-	enabled := make(map[uuid.UUID]bool, len(bots))
+	now := time.Now()
+	usable := make(map[uuid.UUID]bool, len(bots))
 	for _, b := range bots {
-		enabled[b.ID] = b.Enabled
+		usable[b.ID] = b.Available(now)
 	}
 
 	var eligible []domain.Channel
@@ -221,7 +226,7 @@ func (s *channelService) eligibleChannels(ctx context.Context) ([]domain.Channel
 		if !ch.Available {
 			continue
 		}
-		hasMember, err := channelHasEnabledMember(ctx, s.repos, ch.ID, enabled)
+		hasMember, err := channelHasUsableMember(ctx, s.repos, ch.ID, usable)
 		if err != nil {
 			return nil, err
 		}

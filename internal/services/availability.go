@@ -70,6 +70,24 @@ func channelHasEnabledMember(ctx context.Context, r *domain.Repositories, channe
 	return false, nil
 }
 
+// channelHasUsableMember reports whether the channel has at least one member bot
+// that is usable right now, i.e. usable[botID] is true. Unlike
+// channelHasEnabledMember (which only checks the enabled flag, used to decide
+// long-lived availability), this is used by upload selection so a channel whose
+// only member bots are all rate-limited is not picked.
+func channelHasUsableMember(ctx context.Context, r *domain.Repositories, channelID uuid.UUID, usable map[uuid.UUID]bool) (bool, error) {
+	members, err := r.BotChannels.ListByChannel(ctx, channelID)
+	if err != nil {
+		return false, fmt.Errorf("list bot channels for %s: %w", channelID, err)
+	}
+	for _, m := range members {
+		if m.Member && usable[m.BotID] {
+			return true, nil
+		}
+	}
+	return false, nil
+}
+
 // applyChannelAvailability persists the channel's new availability and the
 // matching blob transition inside a single transaction.
 func applyChannelAvailability(ctx context.Context, r *domain.Repositories, tx domain.TxManager, ch domain.Channel, available bool, logger *slog.Logger) error {

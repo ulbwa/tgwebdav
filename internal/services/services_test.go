@@ -248,9 +248,9 @@ func (r *fakeBlobRepo) Create(context.Context, *domain.Blob) error { return nil 
 func (r *fakeBlobRepo) GetByID(context.Context, uuid.UUID) (*domain.Blob, error) {
 	return nil, domain.ErrNotFound
 }
-func (r *fakeBlobRepo) Update(context.Context, *domain.Blob) error             { return nil }
+func (r *fakeBlobRepo) Update(context.Context, *domain.Blob) error                  { return nil }
 func (r *fakeBlobRepo) SetState(context.Context, uuid.UUID, domain.BlobState) error { return nil }
-func (r *fakeBlobRepo) AddRefcount(context.Context, uuid.UUID, int64) error    { return nil }
+func (r *fakeBlobRepo) AddRefcount(context.Context, uuid.UUID, int64) error         { return nil }
 func (r *fakeBlobRepo) ListByChannel(context.Context, uuid.UUID) ([]domain.Blob, error) {
 	return nil, nil
 }
@@ -684,6 +684,52 @@ func TestChannelPickForUploadRoundRobinAndErrNoBot(t *testing.T) {
 	h.bots.bots[botID].Enabled = false // disables ch2's only bot
 	if _, err := svc.PickForUpload(ctx); !errors.Is(err, domain.ErrNoBot) {
 		t.Fatalf("want ErrNoBot when no eligible channel, got %v", err)
+	}
+}
+
+// TestChannelPickForUploadSkipsRateLimitedOnlyChannel verifies that a channel
+// whose only member bot is currently rate-limited (UnavailableUntil in the
+// future) is skipped, while a channel with a usable member bot is still picked,
+// even though the channel itself is marked available. This guards the fix for
+// PickForUpload returning a channel whose member bots are all parked.
+func TestChannelPickForUploadSkipsRateLimitedOnlyChannel(t *testing.T) {
+	h := newHarness()
+	ctx := context.Background()
+
+	svc := NewChannelService(h.repos, h.tx, h.tg, NewSettingsService(h.repos), testLogger())
+
+	// Two available channels. chParked's only bot is rate-limited; chOK's bot is
+	// usable right now.
+	chParked := uuid.New()
+	chOK := uuid.New()
+	h.channels.channels[chParked] = &domain.Channel{ID: chParked, TGChatID: -201, Available: true}
+	h.channels.channels[chOK] = &domain.Channel{ID: chOK, TGChatID: -202, Available: true}
+
+	future := time.Now().Add(time.Hour)
+	parkedBot := uuid.New()
+	usableBot := uuid.New()
+	// Both bots are enabled; parkedBot is rate-limited via UnavailableUntil.
+	h.bots.bots[parkedBot] = &domain.Bot{ID: parkedBot, Username: "parked", Enabled: true, UnavailableUntil: &future}
+	h.bots.bots[usableBot] = &domain.Bot{ID: usableBot, Username: "usable", Enabled: true}
+	h.bc.m[botChannelKey{parkedBot, chParked}] = &domain.BotChannel{BotID: parkedBot, ChannelID: chParked, Member: true}
+	h.bc.m[botChannelKey{usableBot, chOK}] = &domain.BotChannel{BotID: usableBot, ChannelID: chOK, Member: true}
+
+	// Every pick must be chOK; chParked must never be returned.
+	for i := 0; i < 5; i++ {
+		c, err := svc.PickForUpload(ctx)
+		if err != nil {
+			t.Fatalf("PickForUpload: %v", err)
+		}
+		if c.ID != chOK {
+			t.Fatalf("pick %d returned %s, want the channel with a usable bot %s", i, c.ID, chOK)
+		}
+	}
+
+	// If chOK's bot also becomes rate-limited, no channel has a usable member bot
+	// even though both channels are still marked available → ErrNoBot.
+	h.bots.bots[usableBot].UnavailableUntil = &future
+	if _, err := svc.PickForUpload(ctx); !errors.Is(err, domain.ErrNoBot) {
+		t.Fatalf("want ErrNoBot when every member bot is rate-limited, got %v", err)
 	}
 }
 
