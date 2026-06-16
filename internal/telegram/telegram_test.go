@@ -8,6 +8,7 @@ import (
 	"mime/multipart"
 	"net/http"
 	"net/http/httptest"
+	"net/url"
 	"strings"
 	"testing"
 	"time"
@@ -370,5 +371,29 @@ func TestPaceHonorsContextCancellation(t *testing.T) {
 	cancel()
 	if _, err := c.GetMe(ctx, bot); !errors.Is(err, context.Canceled) {
 		t.Fatalf("error = %v, want context.Canceled", err)
+	}
+}
+
+func TestRedactTokenScrubsURLError(t *testing.T) {
+	const token = "123456:AAsecretTOKENvalue"
+	ue := &url.Error{Op: "Get", URL: "https://api.telegram.org/bot" + token + "/getMe", Err: context.Canceled}
+	got := redactToken(ue, token)
+	if strings.Contains(got.Error(), token) {
+		t.Fatalf("token leaked in error: %q", got.Error())
+	}
+	if !strings.Contains(got.Error(), "<redacted>") {
+		t.Errorf("expected <redacted> placeholder, got %q", got.Error())
+	}
+	// The wrapped error identity must be preserved for errors.Is checks.
+	if !errors.Is(got, context.Canceled) {
+		t.Errorf("redactToken broke the error chain (errors.Is context.Canceled failed)")
+	}
+}
+
+func TestRedactTokenPlainError(t *testing.T) {
+	const token = "999:ZZtok"
+	got := redactToken(errors.New("dial tcp via bot"+token+" failed"), token)
+	if strings.Contains(got.Error(), token) {
+		t.Fatalf("token leaked: %q", got.Error())
 	}
 }

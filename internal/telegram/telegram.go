@@ -183,7 +183,7 @@ func (c *Client) do(ctx context.Context, bot *domain.Bot, req *http.Request) (js
 
 	resp, err := c.httpClient().Do(req)
 	if err != nil {
-		return nil, fmt.Errorf("telegram: request failed: %w", err)
+		return nil, fmt.Errorf("telegram: request failed: %w", redactToken(err, bot.Token))
 	}
 	defer resp.Body.Close()
 
@@ -203,6 +203,26 @@ func (c *Client) do(ctx context.Context, bot *domain.Bot, req *http.Request) (js
 	return env.Result, nil
 }
 
+// redactToken removes a bot token from an error so it is never logged, stored
+// in the events table, or exposed through the Management API. Transport failures
+// surface as *url.Error carrying the full request URL (which embeds the token);
+// this redacts that URL in place while preserving the wrapped error so
+// errors.Is/As (e.g. context cancellation) still works.
+func redactToken(err error, token string) error {
+	if err == nil || token == "" {
+		return err
+	}
+	var ue *url.Error
+	if errors.As(err, &ue) {
+		ue.URL = strings.ReplaceAll(ue.URL, token, "<redacted>")
+		return err
+	}
+	if strings.Contains(err.Error(), token) {
+		return fmt.Errorf("%s", strings.ReplaceAll(err.Error(), token, "<redacted>"))
+	}
+	return err
+}
+
 // mapError translates a failed Telegram envelope into a typed domain error.
 //
 //   - HTTP 429 (or a retry_after hint) → *domain.RateLimitError.
@@ -215,6 +235,11 @@ func (c *Client) mapError(env apiResponse) error {
 		retry := time.Duration(0)
 		if env.Parameters != nil {
 			retry = time.Duration(env.Parameters.RetryAfter) * time.Second
+		}
+		if retry <= 0 {
+			// Telegram omitted retry_after; park the bot for a sane default
+			// instead of 0 (which would leave it immediately reusable).
+			retry = 5 * time.Second
 		}
 		return &domain.RateLimitError{RetryAfter: retry}
 	}
@@ -422,7 +447,7 @@ func (c *Client) downloadPath(ctx context.Context, bot *domain.Bot, filePath str
 
 	req, err := http.NewRequestWithContext(ctx, http.MethodGet, dlURL, nil)
 	if err != nil {
-		return nil, fmt.Errorf("telegram: build download request: %w", err)
+		return nil, fmt.Errorf("telegram: build download request: %w", redactToken(err, bot.Token))
 	}
 
 	if err := c.pace(ctx, bot); err != nil {
@@ -431,7 +456,7 @@ func (c *Client) downloadPath(ctx context.Context, bot *domain.Bot, filePath str
 
 	resp, err := c.httpClient().Do(req)
 	if err != nil {
-		return nil, fmt.Errorf("telegram: download failed: %w", err)
+		return nil, fmt.Errorf("telegram: download failed: %w", redactToken(err, bot.Token))
 	}
 	defer resp.Body.Close()
 
