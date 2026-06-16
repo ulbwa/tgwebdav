@@ -7,6 +7,7 @@ import (
 	"net/http"
 	"strings"
 
+	openapi "github.com/ulbwa/tgwebdav/api"
 	"github.com/ulbwa/tgwebdav/internal/domain"
 	"github.com/ulbwa/tgwebdav/internal/management/api"
 )
@@ -49,7 +50,7 @@ const specPath = "/openapi.yaml"
 func serveSpec(w http.ResponseWriter, _ *http.Request) {
 	w.Header().Set("Content-Type", "application/yaml")
 	w.WriteHeader(http.StatusOK)
-	_, _ = w.Write(rawSpec)
+	_, _ = w.Write(openapi.Spec)
 }
 
 // muxAdapter adapts *http.ServeMux to the generated api.ServeMux interface.
