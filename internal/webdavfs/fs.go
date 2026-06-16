@@ -14,6 +14,7 @@ import (
 	"os"
 	"path"
 	"strings"
+	"sync"
 	"time"
 
 	"github.com/google/uuid"
@@ -34,6 +35,8 @@ type FileSystem struct {
 	settings domain.SettingsService
 	stats    domain.StatRecorder
 	log      *slog.Logger
+
+	rootReady sync.Map // userID → struct{}: root node known to exist
 }
 
 // NewFileSystem builds the WebDAV filesystem.
@@ -96,6 +99,7 @@ func toFSErr(err error) error {
 func (f *FileSystem) ensureRoot(ctx context.Context, userID uuid.UUID) (*domain.Node, error) {
 	root, err := f.repos.Nodes.GetByPath(ctx, userID, "/")
 	if err == nil {
+		f.rootReady.Store(userID, struct{}{})
 		return root, nil
 	}
 	if !errors.Is(err, domain.ErrNotFound) {
@@ -116,18 +120,23 @@ func (f *FileSystem) ensureRoot(ctx context.Context, userID uuid.UUID) (*domain.
 	}
 	if err := f.repos.Nodes.Create(ctx, root); err != nil {
 		if errors.Is(err, domain.ErrAlreadyExists) {
+			f.rootReady.Store(userID, struct{}{})
 			return f.repos.Nodes.GetByPath(ctx, userID, "/")
 		}
 		return nil, err
 	}
+	f.rootReady.Store(userID, struct{}{})
 	return root, nil
 }
 
-func (f *FileSystem) lookup(ctx context.Context, userID uuid.UUID, p string) (*domain.Node, error) {
-	if _, err := f.ensureRoot(ctx, userID); err != nil {
-		return nil, err
+// ensureRootExists guarantees the root exists without re-querying once known
+// (used on the write/mkdir hot path).
+func (f *FileSystem) ensureRootExists(ctx context.Context, userID uuid.UUID) error {
+	if _, ok := f.rootReady.Load(userID); ok {
+		return nil
 	}
-	return f.repos.Nodes.GetByPath(ctx, userID, p)
+	_, err := f.ensureRoot(ctx, userID)
+	return err
 }
 
 // Stat implements webdav.FileSystem.
@@ -136,8 +145,16 @@ func (f *FileSystem) Stat(ctx context.Context, name string) (fs.FileInfo, error)
 	if err != nil {
 		return nil, err
 	}
-	node, err := f.lookup(ctx, user.ID, normalize(name))
+	p := normalize(name)
+	node, err := f.repos.Nodes.GetByPath(ctx, user.ID, p)
 	if err != nil {
+		if errors.Is(err, domain.ErrNotFound) && p == "/" {
+			root, rerr := f.ensureRoot(ctx, user.ID)
+			if rerr != nil {
+				return nil, rerr
+			}
+			return infoFromNode(root), nil
+		}
 		return nil, toFSErr(err)
 	}
 	return infoFromNode(node), nil
@@ -153,7 +170,7 @@ func (f *FileSystem) Mkdir(ctx context.Context, name string, _ os.FileMode) erro
 	if p == "/" {
 		return os.ErrExist
 	}
-	if _, err := f.ensureRoot(ctx, user.ID); err != nil {
+	if err := f.ensureRootExists(ctx, user.ID); err != nil {
 		return err
 	}
 	if _, err := f.repos.Nodes.GetByPath(ctx, user.ID, p); err == nil {
@@ -191,13 +208,13 @@ func (f *FileSystem) OpenFile(ctx context.Context, name string, flag int, _ os.F
 		return nil, err
 	}
 	p := normalize(name)
-	if _, err := f.ensureRoot(ctx, user.ID); err != nil {
-		return nil, err
-	}
 
 	writable := flag&(os.O_WRONLY|os.O_RDWR) != 0
 	if !writable {
 		return f.openRead(ctx, user, p)
+	}
+	if err := f.ensureRootExists(ctx, user.ID); err != nil {
+		return nil, err
 	}
 	return f.openWrite(ctx, user, p, flag)
 }
@@ -205,20 +222,22 @@ func (f *FileSystem) OpenFile(ctx context.Context, name string, flag int, _ os.F
 func (f *FileSystem) openRead(ctx context.Context, user *domain.User, p string) (webdav.File, error) {
 	node, err := f.repos.Nodes.GetByPath(ctx, user.ID, p)
 	if err != nil {
+		if errors.Is(err, domain.ErrNotFound) && p == "/" {
+			root, rerr := f.ensureRoot(ctx, user.ID)
+			if rerr != nil {
+				return nil, rerr
+			}
+			return &dirFile{fs: f, ctx: ctx, node: root, user: user.ID}, nil
+		}
 		return nil, toFSErr(err)
 	}
 	if node.IsDir {
 		return &dirFile{fs: f, ctx: ctx, node: node, user: user.ID}, nil
 	}
-	f.stats.IncReadOps()
-	var extents []domain.Extent
-	if node.State == domain.NodeStored {
-		extents, err = f.repos.Extents.ListByNode(ctx, node.ID)
-		if err != nil {
-			return nil, err
-		}
-	}
-	return &readFile{fs: f, ctx: ctx, node: node, extents: extents, bps: user.BandwidthBPS}, nil
+	// Extents are loaded lazily on the first Read: PROPFIND opens every child
+	// just to Stat it and never reads, so eager loading would issue one query
+	// per directory entry.
+	return &readFile{fs: f, ctx: ctx, node: node, bps: user.BandwidthBPS}, nil
 }
 
 func (f *FileSystem) openWrite(ctx context.Context, user *domain.User, p string, flag int) (webdav.File, error) {

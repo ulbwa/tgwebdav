@@ -128,10 +128,25 @@ type readFile struct {
 	ctx     context.Context
 	node    *domain.Node
 	extents []domain.Extent
+	loaded  bool
 	bps     int64
 
 	pos int64
 	src io.Reader // throttled assembler positioned at pos; rebuilt after Seek
+}
+
+// ensureExtents loads the node's extents on first read (stored nodes only).
+func (r *readFile) ensureExtents() error {
+	if r.loaded || r.node.State != domain.NodeStored {
+		return nil
+	}
+	extents, err := r.fs.repos.Extents.ListByNode(r.ctx, r.node.ID)
+	if err != nil {
+		return err
+	}
+	r.extents = extents
+	r.loaded = true
+	return nil
 }
 
 func (r *readFile) Close() error              { return nil }
@@ -165,7 +180,11 @@ func (r *readFile) Read(p []byte) (int, error) {
 	if r.pos >= r.node.Size {
 		return 0, io.EOF
 	}
+	if err := r.ensureExtents(); err != nil {
+		return 0, err
+	}
 	if r.src == nil {
+		r.fs.stats.IncReadOps()
 		raw := r.fs.newContentReader(r.ctx, r.node, r.extents, r.pos)
 		r.src = r.fs.limiter.ThrottledReader(raw, r.bps)
 	}
