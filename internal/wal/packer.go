@@ -38,6 +38,13 @@ type Packer struct {
 	leaseFor     time.Duration
 	pollInterval time.Duration
 	batchLimit   int
+
+	// nodeExtents accumulates a node's extents across the (possibly several)
+	// blobs it spans. Extents are written to the DB only when the node is
+	// finalized, atomically and guarded by lease ownership, so a partially
+	// packed node never leaves committed extents behind (see finalizePending).
+	// Owned by the single Run goroutine; no locking needed.
+	nodeExtents map[uuid.UUID][]domain.Extent
 }
 
 // NewPacker builds a packer. leaseOwner identifies this worker for crash-safe
@@ -65,9 +72,10 @@ func NewPacker(
 		stats:        stats,
 		log:          logger.With("component", "wal-packer"),
 		leaseOwner:   uuid.NewString(),
-		leaseFor:     2 * time.Minute,
+		leaseFor:     10 * time.Minute,
 		pollInterval: 250 * time.Millisecond,
 		batchLimit:   64,
+		nodeExtents:  make(map[uuid.UUID][]domain.Extent),
 	}
 }
 
@@ -220,32 +228,27 @@ func (p *Packer) appendNode(ctx context.Context, cur **run, pending *[]domain.No
 	return flushedAny, err
 }
 
-// finalizeEmpty stores a zero-length node immediately (no blob involved).
+// finalizeEmpty stores a zero-length node immediately (no blob involved),
+// guarded by lease ownership like finalizePending.
 func (p *Packer) finalizeEmpty(ctx context.Context, node domain.Node) error {
 	return p.tx.WithTx(ctx, func(ctx context.Context, r *domain.Repositories) error {
-		n, err := r.Nodes.GetByID(ctx, node.ID)
+		owned, err := r.Nodes.MarkStoredIfOwner(ctx, node.ID, p.leaseOwner)
 		if err != nil {
 			return err
 		}
-		if n.State == domain.NodeStored {
+		if !owned {
 			return nil
 		}
-		n.State = domain.NodeStored
-		if err := r.Nodes.Update(ctx, n); err != nil {
-			return err
-		}
-		if err := r.WAL.DeleteByNode(ctx, node.ID); err != nil {
-			return err
-		}
-		return r.Nodes.ReleaseLease(ctx, node.ID)
+		return r.WAL.DeleteByNode(ctx, node.ID)
 	})
 }
 
-// flush uploads cur's bytes as one blob and, in a single transaction, records
-// the blob + extents and finalizes every pending node.
+// flush uploads cur's bytes as one blob, records the blob (with refcount 0 —
+// its extents are written later at node finalization), buffers the per-node
+// extents in memory, then finalizes every fully-flushed pending node.
 func (p *Packer) flush(ctx context.Context, cur *run, pending []domain.Node) error {
 	if len(cur.buf) == 0 {
-		return p.finalizePendingOnly(ctx, pending)
+		return p.finalizePending(ctx, pending)
 	}
 
 	channel, err := p.channels.PickForUpload(ctx)
@@ -258,14 +261,13 @@ func (p *Packer) flush(ctx context.Context, cur *run, pending []domain.Node) err
 		return err
 	}
 
-	seq, err := p.repos.Channels.IncrementCounter(ctx, channel.ID, 1)
-	if err != nil {
-		return fmt.Errorf("increment counter: %w", err)
-	}
-
 	blobID := uuid.New()
 	now := time.Now()
 	err = p.tx.WithTx(ctx, func(ctx context.Context, r *domain.Repositories) error {
+		seq, err := r.Channels.IncrementCounter(ctx, channel.ID, 1)
+		if err != nil {
+			return fmt.Errorf("increment counter: %w", err)
+		}
 		blob := &domain.Blob{
 			ID:         blobID,
 			ChannelID:  channel.ID,
@@ -273,47 +275,44 @@ func (p *Packer) flush(ctx context.Context, cur *run, pending []domain.Node) err
 			MessageSeq: seq,
 			Size:       int64(len(cur.buf)),
 			State:      domain.BlobStored,
-			Refcount:   int64(len(cur.segs)),
+			Refcount:   0, // bumped when each referencing node is finalized
 			CreatedAt:  now,
 			SealedAt:   &now,
 		}
 		if err := r.Blobs.Create(ctx, blob); err != nil {
 			return err
 		}
-		if err := r.BlobBotFiles.Upsert(ctx, &domain.BlobBotFile{
+		return r.BlobBotFiles.Upsert(ctx, &domain.BlobBotFile{
 			BlobID:       blobID,
 			BotID:        bot.ID,
 			FileID:       res.FileID,
 			FileUniqueID: res.FileUniqueID,
 			FetchedAt:    now,
-		}); err != nil {
-			return err
-		}
-		extents := make([]domain.Extent, 0, len(cur.segs))
-		for _, s := range cur.segs {
-			extents = append(extents, domain.Extent{
-				ID:         uuid.New(),
-				NodeID:     s.nodeID,
-				Seq:        s.seq,
-				FileOffset: s.fileOffset,
-				Length:     s.length,
-				BlobID:     blobID,
-				BlobOffset: s.blobOffset,
-			})
-		}
-		if err := r.Extents.CreateBatch(ctx, extents); err != nil {
-			return err
-		}
-		return finalizeNodes(ctx, r, pending)
+		})
 	})
 	if err != nil {
 		return fmt.Errorf("persist blob: %w", err)
 	}
 
+	// Buffer this blob's segments as pending extents on their nodes.
+	for _, s := range cur.segs {
+		p.nodeExtents[s.nodeID] = append(p.nodeExtents[s.nodeID], domain.Extent{
+			ID:         uuid.New(),
+			NodeID:     s.nodeID,
+			Seq:        s.seq,
+			FileOffset: s.fileOffset,
+			Length:     s.length,
+			BlobID:     blobID,
+			BlobOffset: s.blobOffset,
+		})
+	}
+
 	p.stats.AddWriteBytes(int64(len(cur.buf)))
 	p.log.Debug("flushed blob", "blob", blobID, "channel", channel.ID, "bot", bot.ID,
-		"bytes", len(cur.buf), "extents", len(cur.segs), "nodes", len(pending))
-	return nil
+		"bytes", len(cur.buf), "segments", len(cur.segs))
+
+	// Every pending node is now entirely in committed blobs → finalize them.
+	return p.finalizePending(ctx, pending)
 }
 
 // upload sends the bytes, rotating bots on rate-limit/forbidden errors.
@@ -349,42 +348,41 @@ func (p *Packer) upload(ctx context.Context, channel *domain.Channel, data []byt
 	return domain.TGSendResult{}, nil, fmt.Errorf("upload failed after retries: %w", lastErr)
 }
 
-// finalizePendingOnly finalizes pending nodes when there is no blob to write
-// (e.g. all pending nodes were zero-byte).
-func (p *Packer) finalizePendingOnly(ctx context.Context, pending []domain.Node) error {
-	if len(pending) == 0 {
-		return nil
-	}
-	return p.tx.WithTx(ctx, func(ctx context.Context, r *domain.Repositories) error {
-		return finalizeNodes(ctx, r, pending)
-	})
-}
-
-// finalizeNodes marks each pending node stored, removes its WAL rows and clears
-// its packer lease. Already-stored nodes (e.g. zero-byte, finalized early) are
-// skipped so this is idempotent.
-func finalizeNodes(ctx context.Context, r *domain.Repositories, pending []domain.Node) error {
+// finalizePending atomically finalizes each fully-flushed node: in one
+// transaction it transitions the node buffered→stored ONLY if this worker still
+// owns the lease (MarkStoredIfOwner), then writes the node's accumulated extents
+// (bumping each blob's refcount) and deletes its WAL rows. If the lease was lost
+// or the node was already finalized, the buffered extents are discarded without
+// being written, so a lost-lease re-pack can never produce duplicate extents and
+// a partially-packed node never leaves committed extents behind.
+func (p *Packer) finalizePending(ctx context.Context, pending []domain.Node) error {
 	for i := range pending {
-		n, err := r.Nodes.GetByID(ctx, pending[i].ID)
-		if err != nil {
-			if errors.Is(err, domain.ErrNotFound) {
-				continue // deleted while buffered
+		nodeID := pending[i].ID
+		extents := p.nodeExtents[nodeID]
+		err := p.tx.WithTx(ctx, func(ctx context.Context, r *domain.Repositories) error {
+			owned, err := r.Nodes.MarkStoredIfOwner(ctx, nodeID, p.leaseOwner)
+			if err != nil {
+				return err
 			}
+			if !owned {
+				return nil // lease lost or already finalized → discard extents
+			}
+			if len(extents) > 0 {
+				if err := r.Extents.CreateBatch(ctx, extents); err != nil {
+					return err
+				}
+				for _, e := range extents {
+					if err := r.Blobs.AddRefcount(ctx, e.BlobID, 1); err != nil {
+						return err
+					}
+				}
+			}
+			return r.WAL.DeleteByNode(ctx, nodeID)
+		})
+		if err != nil {
 			return err
 		}
-		if n.State == domain.NodeStored {
-			continue
-		}
-		n.State = domain.NodeStored
-		if err := r.Nodes.Update(ctx, n); err != nil {
-			return err
-		}
-		if err := r.WAL.DeleteByNode(ctx, n.ID); err != nil {
-			return err
-		}
-		if err := r.Nodes.ReleaseLease(ctx, n.ID); err != nil {
-			return err
-		}
+		delete(p.nodeExtents, nodeID)
 	}
 	return nil
 }
@@ -398,6 +396,10 @@ func (p *Packer) releaseLeases(ctx context.Context, cur *run, pending []domain.N
 			return
 		}
 		seen[id] = struct{}{}
+		// Discard buffered extents for the abandoned node; it will be re-packed
+		// from scratch. The blobs already uploaded for it become orphans
+		// (refcount 0) and are reclaimed by the GC after the grace period.
+		delete(p.nodeExtents, id)
 		_ = p.repos.Nodes.ReleaseLease(ctx, id)
 	}
 	for i := range pending {

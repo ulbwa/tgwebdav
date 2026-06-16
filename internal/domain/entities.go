@@ -73,12 +73,12 @@ type APIToken struct {
 // Bot is a Telegram bot used to upload/download blobs. Token is the decrypted
 // API token; the postgres layer encrypts it at rest with TGWEBDAV_SECRET_KEY.
 type Bot struct {
-	ID              uuid.UUID
-	Username        string
-	Token           string
-	Enabled         bool
+	ID               uuid.UUID
+	Username         string
+	Token            string
+	Enabled          bool
 	UnavailableUntil *time.Time // set from Telegram retry_after
-	CreatedAt       time.Time
+	CreatedAt        time.Time
 }
 
 // Available reports whether the bot may be used at instant now.

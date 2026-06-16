@@ -226,6 +226,12 @@ func TestBlobRefcountAndCollectable(t *testing.T) {
 		t.Fatalf("Refcount: got %d want 0", got.Refcount)
 	}
 
+	// ListCollectable applies a grace period on created_at to protect blobs
+	// whose extents are still being written; backdate this one so it qualifies.
+	if err := db.Exec("UPDATE blobs SET created_at = now() - interval '1 hour' WHERE id = ?", blob.ID).Error; err != nil {
+		t.Fatalf("backdate blob: %v", err)
+	}
+
 	collectable, err := repos.Blobs.ListCollectable(ctx, 100)
 	if err != nil {
 		t.Fatalf("ListCollectable: %v", err)

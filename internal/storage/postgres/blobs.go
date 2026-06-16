@@ -107,8 +107,12 @@ func (r *blobRepo) ListByState(ctx context.Context, state domain.BlobState) ([]d
 // ListCollectable returns stored blobs whose refcount has dropped to <= 0.
 func (r *blobRepo) ListCollectable(ctx context.Context, limit int) ([]domain.Blob, error) {
 	var ms []blobModel
+	// A 10-minute grace period protects freshly-uploaded blobs whose extents are
+	// still being written by the packer in a separate finalize transaction (a new
+	// blob is created with refcount 0; the refcount is incremented when each of
+	// its nodes is finalized). Without it the GC could delete an in-flight blob.
 	q := txFromCtx(ctx, r.base).
-		Where("state = ? AND refcount <= 0", string(domain.BlobStored)).
+		Where("state = ? AND refcount <= 0 AND created_at < now() - interval '10 minutes'", string(domain.BlobStored)).
 		Order("created_at")
 	if limit > 0 {
 		q = q.Limit(limit)

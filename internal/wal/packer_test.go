@@ -2,6 +2,7 @@ package wal
 
 import (
 	"context"
+	"fmt"
 	"sort"
 	"sync"
 	"testing"
@@ -19,6 +20,7 @@ type store struct {
 	nodes   map[uuid.UUID]*domain.Node
 	wal     map[uuid.UUID][]domain.WALChunk
 	leased  map[uuid.UUID]bool
+	owner   map[uuid.UUID]string
 	blobs   []*domain.Blob
 	extents []domain.Extent
 	counter int64
@@ -26,7 +28,12 @@ type store struct {
 }
 
 func newStore() *store {
-	return &store{nodes: map[uuid.UUID]*domain.Node{}, wal: map[uuid.UUID][]domain.WALChunk{}, leased: map[uuid.UUID]bool{}}
+	return &store{
+		nodes:  map[uuid.UUID]*domain.Node{},
+		wal:    map[uuid.UUID][]domain.WALChunk{},
+		leased: map[uuid.UUID]bool{},
+		owner:  map[uuid.UUID]string{},
+	}
 }
 
 func (s *store) addBuffered(size int64, chunks ...[]byte) uuid.UUID {
@@ -49,13 +56,14 @@ type fakeNodes struct {
 	s *store
 }
 
-func (f *fakeNodes) ClaimBufferedForPacking(_ context.Context, _ string, leaseFor time.Duration, limit int) ([]domain.Node, error) {
+func (f *fakeNodes) ClaimBufferedForPacking(_ context.Context, owner string, leaseFor time.Duration, limit int) ([]domain.Node, error) {
 	f.s.mu.Lock()
 	defer f.s.mu.Unlock()
 	var out []domain.Node
 	for id, n := range f.s.nodes {
 		if n.State == domain.NodeBuffered && !f.s.leased[id] {
 			f.s.leased[id] = true
+			f.s.owner[id] = owner
 			out = append(out, *n)
 			if len(out) >= limit {
 				break
@@ -64,6 +72,19 @@ func (f *fakeNodes) ClaimBufferedForPacking(_ context.Context, _ string, leaseFo
 	}
 	sort.Slice(out, func(i, j int) bool { return out[i].ID.String() < out[j].ID.String() })
 	return out, nil
+}
+
+func (f *fakeNodes) MarkStoredIfOwner(_ context.Context, id uuid.UUID, owner string) (bool, error) {
+	f.s.mu.Lock()
+	defer f.s.mu.Unlock()
+	n, ok := f.s.nodes[id]
+	if !ok || n.State != domain.NodeBuffered || f.s.owner[id] != owner {
+		return false, nil
+	}
+	n.State = domain.NodeStored
+	delete(f.s.leased, id)
+	delete(f.s.owner, id)
+	return true, nil
 }
 
 func (f *fakeNodes) GetByID(_ context.Context, id uuid.UUID) (*domain.Node, error) {
@@ -128,6 +149,18 @@ func (f *fakeBlobs) Create(_ context.Context, b *domain.Blob) error {
 	return nil
 }
 
+func (f *fakeBlobs) AddRefcount(_ context.Context, id uuid.UUID, delta int64) error {
+	f.s.mu.Lock()
+	defer f.s.mu.Unlock()
+	for _, b := range f.s.blobs {
+		if b.ID == id {
+			b.Refcount += delta
+			return nil
+		}
+	}
+	return domain.ErrNotFound
+}
+
 type fakeBlobFiles struct {
 	domain.BlobBotFileRepository
 }
@@ -170,9 +203,21 @@ func (f fakeTx) WithTx(ctx context.Context, fn func(context.Context, *domain.Rep
 	return fn(ctx, f.repos)
 }
 
-type fakeTG struct{ s *store }
+type fakeTG struct {
+	s              *store
+	mu             sync.Mutex
+	calls          int
+	failLo, failHi int // 1-based inclusive call range that returns an error
+}
 
 func (f *fakeTG) SendDocument(_ context.Context, _ *domain.Bot, _ int64, _ string, data []byte) (domain.TGSendResult, error) {
+	f.mu.Lock()
+	f.calls++
+	n := f.calls
+	f.mu.Unlock()
+	if f.failLo != 0 && n >= f.failLo && n <= f.failHi {
+		return domain.TGSendResult{}, fmt.Errorf("simulated upload failure on call %d", n)
+	}
 	f.s.mu.Lock()
 	defer f.s.mu.Unlock()
 	f.s.msgID++
@@ -195,15 +240,18 @@ func (f *fakeTG) DownloadFile(context.Context, *domain.Bot, string) ([]byte, err
 
 type fakeChanSvc struct{ ch domain.Channel }
 
-func (f fakeChanSvc) PickForUpload(context.Context) (*domain.Channel, error) { c := f.ch; return &c, nil }
-func (f fakeChanSvc) Add(context.Context, int64) (*domain.Channel, error)    { return nil, nil }
-func (f fakeChanSvc) Remove(context.Context, uuid.UUID) error                { return nil }
+func (f fakeChanSvc) PickForUpload(context.Context) (*domain.Channel, error) {
+	c := f.ch
+	return &c, nil
+}
+func (f fakeChanSvc) Add(context.Context, int64) (*domain.Channel, error) { return nil, nil }
+func (f fakeChanSvc) Remove(context.Context, uuid.UUID) error             { return nil }
 func (f fakeChanSvc) SetEvictionThreshold(context.Context, uuid.UUID, int64) error {
 	return nil
 }
-func (f fakeChanSvc) List(context.Context) ([]domain.Channel, error)        { return nil, nil }
+func (f fakeChanSvc) List(context.Context) ([]domain.Channel, error)          { return nil, nil }
 func (f fakeChanSvc) Get(context.Context, uuid.UUID) (*domain.Channel, error) { return nil, nil }
-func (f fakeChanSvc) ReevaluateAvailability(context.Context) error          { return nil }
+func (f fakeChanSvc) ReevaluateAvailability(context.Context) error            { return nil }
 
 type fakeBotSvc struct{ bot domain.Bot }
 
@@ -211,17 +259,17 @@ func (f fakeBotSvc) PickForUpload(context.Context, uuid.UUID) (*domain.Bot, erro
 	b := f.bot
 	return &b, nil
 }
-func (f fakeBotSvc) Add(context.Context, string) (*domain.Bot, error)     { return nil, nil }
-func (f fakeBotSvc) Remove(context.Context, uuid.UUID) error              { return nil }
-func (f fakeBotSvc) SetEnabled(context.Context, uuid.UUID, bool) error    { return nil }
-func (f fakeBotSvc) List(context.Context) ([]domain.Bot, error)           { return nil, nil }
-func (f fakeBotSvc) Get(context.Context, uuid.UUID) (*domain.Bot, error)  { return nil, nil }
-func (f fakeBotSvc) RefreshMembership(context.Context) error              { return nil }
+func (f fakeBotSvc) Add(context.Context, string) (*domain.Bot, error)    { return nil, nil }
+func (f fakeBotSvc) Remove(context.Context, uuid.UUID) error             { return nil }
+func (f fakeBotSvc) SetEnabled(context.Context, uuid.UUID, bool) error   { return nil }
+func (f fakeBotSvc) List(context.Context) ([]domain.Bot, error)          { return nil, nil }
+func (f fakeBotSvc) Get(context.Context, uuid.UUID) (*domain.Bot, error) { return nil, nil }
+func (f fakeBotSvc) RefreshMembership(context.Context) error             { return nil }
 
 type fakeSettings struct{ s domain.Settings }
 
-func (f fakeSettings) Get(context.Context) (domain.Settings, error)     { return f.s, nil }
-func (f fakeSettings) Update(context.Context, domain.Settings) error    { return nil }
+func (f fakeSettings) Get(context.Context) (domain.Settings, error)  { return f.s, nil }
+func (f fakeSettings) Update(context.Context, domain.Settings) error { return nil }
 
 type noopStats struct{}
 
@@ -234,6 +282,11 @@ func (noopStats) IncCacheMiss()       {}
 func (noopStats) IncTelegramReq()     {}
 
 func newPacker(s *store, blobMax int64) (*Packer, *store) {
+	p, _ := newPackerTG(s, blobMax, &fakeTG{s: s})
+	return p, s
+}
+
+func newPackerTG(s *store, blobMax int64, tg *fakeTG) (*Packer, *store) {
 	repos := &domain.Repositories{
 		Nodes:        &fakeNodes{s: s},
 		WAL:          &fakeWAL{s: s},
@@ -247,7 +300,7 @@ func newPacker(s *store, blobMax int64) (*Packer, *store) {
 	p := NewPacker(
 		repos,
 		fakeTx{repos: repos},
-		&fakeTG{s: s},
+		tg,
 		fakeChanSvc{ch: domain.Channel{ID: chID, TGChatID: -100123}},
 		fakeBotSvc{bot: domain.Bot{ID: uuid.New(), Enabled: true}},
 		fakeSettings{s: domain.Settings{BlobMaxSize: blobMax, WALIdleTimeout: time.Millisecond}},
@@ -268,8 +321,14 @@ func runUntilBlobs(t *testing.T, p *Packer, s *store, want int) {
 	for {
 		s.mu.Lock()
 		n := len(s.blobs)
+		buffered := 0
+		for _, nd := range s.nodes {
+			if nd.State == domain.NodeBuffered {
+				buffered++
+			}
+		}
 		s.mu.Unlock()
-		if n >= want {
+		if n >= want && buffered == 0 {
 			cancel()
 			<-done
 			return
@@ -356,6 +415,58 @@ func TestPackerSplitsLargeFileAcrossBlobs(t *testing.T) {
 	}
 	if len(s.wal[id]) != 0 {
 		t.Errorf("WAL not deleted")
+	}
+}
+
+// TestPackerRepackAfterPartialFailureNoDuplicateExtents reproduces the critical
+// bug the review found: a file that spans several blobs whose later flush fails
+// must NOT leave behind extents from the partially-packed run when it is
+// re-packed. After the refactor, extents are only written at finalization, so a
+// failed run leaves only an orphan blob (refcount 0) and the re-pack produces
+// exactly one clean extent set.
+func TestPackerRepackAfterPartialFailureNoDuplicateExtents(t *testing.T) {
+	s := newStore()
+	id := s.addBuffered(2500, make([]byte, 1000), make([]byte, 1000), make([]byte, 500))
+	// Calls: run1 blob1 = call 1 (ok); run1 blob2 attempts = calls 2..7 (fail, 6
+	// upload retries) → run1 aborts after blob1. run2 starts fresh at call 8+.
+	tg := &fakeTG{s: s, failLo: 2, failHi: 7}
+	p, _ := newPackerTG(s, 1000, tg)
+	runUntilBlobs(t, p, s, 3) // wait until node stored with 3 good blobs
+
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	if s.nodes[id].State != domain.NodeStored {
+		t.Fatalf("node not stored")
+	}
+	// Exactly 3 extents (no duplicates from the aborted run).
+	var nodeExt []domain.Extent
+	for _, e := range s.extents {
+		if e.NodeID == id {
+			nodeExt = append(nodeExt, e)
+		}
+	}
+	if len(nodeExt) != 3 {
+		t.Fatalf("got %d extents, want 3 (duplicate extents from aborted run!)", len(nodeExt))
+	}
+	sort.Slice(nodeExt, func(i, j int) bool { return nodeExt[i].FileOffset < nodeExt[j].FileOffset })
+	wantOff := []int64{0, 1000, 2000}
+	for i, e := range nodeExt {
+		if e.FileOffset != wantOff[i] {
+			t.Errorf("extent %d offset %d, want %d", i, e.FileOffset, wantOff[i])
+		}
+	}
+	// Each good blob referenced exactly once; the orphan blob from the aborted
+	// run has refcount 0 (GC-collectable).
+	orphans := 0
+	for _, b := range s.blobs {
+		if b.Refcount == 0 {
+			orphans++
+		} else if b.Refcount != 1 {
+			t.Errorf("blob %s refcount %d, want 1", b.ID, b.Refcount)
+		}
+	}
+	if orphans != 1 {
+		t.Errorf("got %d orphan blobs, want exactly 1 (from the aborted run)", orphans)
 	}
 }
 

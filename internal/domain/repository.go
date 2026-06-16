@@ -136,6 +136,12 @@ type NodeRepository interface {
 	ClaimBufferedForPacking(ctx context.Context, leaseOwner string, leaseFor time.Duration, limit int) ([]Node, error)
 	// ReleaseLease clears the packer lease on a node (e.g. on failure).
 	ReleaseLease(ctx context.Context, id uuid.UUID) error
+	// MarkStoredIfOwner atomically transitions a node from buffered to stored and
+	// clears its lease, but only if it is still buffered and still leased by
+	// owner. It reports whether the transition happened (false means another
+	// worker already finalized it or stole the lease). This is the
+	// concurrency/idempotency guard the packer uses before writing extents.
+	MarkStoredIfOwner(ctx context.Context, id uuid.UUID, owner string) (bool, error)
 }
 
 // ExtentRepository persists extents (file-range → blob-range mappings).

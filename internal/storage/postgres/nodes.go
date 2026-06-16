@@ -188,6 +188,22 @@ func (r *nodeRepo) ReleaseLease(ctx context.Context, id uuid.UUID) error {
 	return nil
 }
 
+// MarkStoredIfOwner atomically marks a node stored and clears its lease only if
+// it is still buffered and still owned by owner. Returns true iff a row changed.
+func (r *nodeRepo) MarkStoredIfOwner(ctx context.Context, id uuid.UUID, owner string) (bool, error) {
+	res := txFromCtx(ctx, r.base).Model(&nodeModel{}).
+		Where("id = ? AND state = ? AND packer_lease_owner = ?", id, string(domain.NodeBuffered), owner).
+		Updates(map[string]any{
+			"state":              string(domain.NodeStored),
+			"packer_lease_owner": "",
+			"packer_lease_until": nil,
+		})
+	if res.Error != nil {
+		return false, fmt.Errorf("mark stored if owner: %w", translateError(res.Error))
+	}
+	return res.RowsAffected > 0, nil
+}
+
 // escapeLike escapes LIKE metacharacters (\, %, _) using backslash as the
 // escape character (paired with ESCAPE '\' in the query).
 func escapeLike(s string) string {
