@@ -26,6 +26,20 @@ go.work.sum
 
 # env file
 .env
+.env.*
+!.env.example
+
+# Build artifacts
+/tgwebdav
+/bin/
+/dist/
+
+# Superpowers working docs (never committed)
+docs/superpowers/
+
+# Local scratch
+/tmp/
+*.local
 
 # Editor/IDE
 # .idea/
