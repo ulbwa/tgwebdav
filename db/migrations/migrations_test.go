@@ -2,6 +2,8 @@ package migrations
 
 import (
 	"database/sql"
+	"io"
+	"log/slog"
 	"os"
 	"testing"
 
@@ -15,11 +17,12 @@ func TestRun(t *testing.T) {
 	if dsn == "" {
 		t.Skip("set TGWEBDAV_TEST_DSN to run migration integration test")
 	}
-	if err := Run(dsn); err != nil {
+	logger := slog.New(slog.NewTextHandler(io.Discard, nil))
+	if err := Run(dsn, logger); err != nil {
 		t.Fatalf("Run: %v", err)
 	}
 	// Idempotency: running again must be a no-op.
-	if err := Run(dsn); err != nil {
+	if err := Run(dsn, logger); err != nil {
 		t.Fatalf("Run (second): %v", err)
 	}
 

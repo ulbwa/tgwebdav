@@ -16,6 +16,9 @@ import (
 	"syscall"
 	"time"
 
+	"github.com/spf13/cobra"
+
+	"github.com/ulbwa/tgwebdav/db/migrations"
 	"github.com/ulbwa/tgwebdav/internal/auth"
 	"github.com/ulbwa/tgwebdav/internal/blob"
 	"github.com/ulbwa/tgwebdav/internal/cache"
@@ -26,7 +29,6 @@ import (
 	"github.com/ulbwa/tgwebdav/internal/server"
 	"github.com/ulbwa/tgwebdav/internal/services"
 	"github.com/ulbwa/tgwebdav/internal/stats"
-	"github.com/ulbwa/tgwebdav/internal/storage/migrations"
 	"github.com/ulbwa/tgwebdav/internal/storage/postgres"
 	"github.com/ulbwa/tgwebdav/internal/telegram"
 	"github.com/ulbwa/tgwebdav/internal/wal"
@@ -34,17 +36,36 @@ import (
 )
 
 func main() {
-	if err := run(os.Args[1:]); err != nil {
-		fmt.Fprintln(os.Stderr, "tgwebdav:", err)
+	if err := newRootCommand().Execute(); err != nil {
 		os.Exit(1)
 	}
 }
 
-func run(args []string) error {
-	cfg, err := config.Load(args)
-	if err != nil {
-		return err
+// newRootCommand builds the cobra command. Flags are registered via
+// config.AddFlags; on run it loads the optional .env file, resolves the
+// configuration (flags + env via viper) and starts the servers.
+func newRootCommand() *cobra.Command {
+	cmd := &cobra.Command{
+		Use:           "tgwebdav",
+		Short:         "WebDAV server backed by Telegram channels",
+		Long:          "A single binary serving a per-user WebDAV namespace and an admin Management API over one PostgreSQL database, packing file content into Telegram channel blobs.",
+		SilenceUsage:  true,
+		SilenceErrors: false,
+		RunE: func(cmd *cobra.Command, _ []string) error {
+			envFile, _ := cmd.Flags().GetString("env-file")
+			config.LoadDotenv(envFile)
+			cfg, err := config.Resolve(cmd.Flags())
+			if err != nil {
+				return err
+			}
+			return run(cfg)
+		},
 	}
+	config.AddFlags(cmd.Flags())
+	return cmd
+}
+
+func run(cfg *config.Config) error {
 	logger := newLogger(cfg.LogLevel)
 	slog.SetDefault(logger)
 
@@ -53,7 +74,7 @@ func run(args []string) error {
 		"cache_dir", cfg.CacheDir, "cache_size", cfg.CacheSize)
 
 	// 1. Migrations (fail fast).
-	if err := migrations.Run(cfg.DSN); err != nil {
+	if err := migrations.Run(cfg.DSN, logger); err != nil {
 		return fmt.Errorf("migrations: %w", err)
 	}
 

@@ -1,17 +1,25 @@
-// Package config parses runtime configuration from command-line flags and
-// environment variables (with an optional .env file). Only bootstrap-level
-// settings live here; everything tunable at runtime is stored in the database.
+// Package config resolves runtime configuration from command-line flags
+// (registered on a cobra command via AddFlags) and environment variables
+// (bound with viper, prefixed TGWEBDAV_), with an optional .env file loaded into
+// the process environment beforehand. Only bootstrap-level settings live here;
+// everything tunable at runtime is stored in the database.
 package config
 
 import (
 	"crypto/sha256"
-	"flag"
 	"fmt"
 	"os"
 	"path/filepath"
 	"strconv"
 	"strings"
+
+	"github.com/spf13/pflag"
+	"github.com/spf13/viper"
 )
+
+// envPrefix is the prefix viper expects on environment variables, e.g. the
+// "dsn" key maps to TGWEBDAV_DSN.
+const envPrefix = "TGWEBDAV"
 
 // Config is the fully-resolved bootstrap configuration.
 type Config struct {
@@ -31,52 +39,59 @@ type Config struct {
 	LogLevel string // debug|info|warn|error
 }
 
-// Load resolves configuration from args (flag set), the process environment and
-// an optional .env file. Precedence: explicit flag > environment > .env > default.
-func Load(args []string) (*Config, error) {
-	// Best-effort .env load (does not override already-set env vars).
-	envFile := ".env"
-	for i, a := range args {
-		if a == "--env-file" && i+1 < len(args) {
-			envFile = args[i+1]
-		} else if strings.HasPrefix(a, "--env-file=") {
-			envFile = strings.TrimPrefix(a, "--env-file=")
-		}
-	}
-	_ = loadDotenv(envFile)
+// AddFlags registers the command-line flags on fs (a cobra command's flag set).
+// Defaults are static; the precedence flag > env > default is applied by Resolve
+// through viper.
+func AddFlags(fs *pflag.FlagSet) {
+	fs.String("dsn", "", "PostgreSQL DSN (env TGWEBDAV_DSN)")
+	fs.String("webdav-addr", ":8080", "WebDAV listen address (env TGWEBDAV_WEBDAV_ADDR)")
+	fs.String("mgmt-addr", ":8081", "Management API listen address (env TGWEBDAV_MGMT_ADDR)")
+	fs.String("cache-dir", "", "blob cache directory; default user cache dir (env TGWEBDAV_CACHE_DIR)")
+	fs.String("cache-size", "1GiB", "blob cache size, e.g. 512MiB, 2GiB (env TGWEBDAV_CACHE_SIZE)")
+	fs.String("first-user", "", "bootstrap admin as login:password (env TGWEBDAV_FIRST_USER)")
+	fs.String("log-level", "info", "log level: debug|info|warn|error (env TGWEBDAV_LOG_LEVEL)")
+	fs.String("env-file", ".env", ".env file to load before resolving configuration")
+}
 
-	fs := flag.NewFlagSet("tgwebdav", flag.ContinueOnError)
-	var (
-		dsn        = fs.String("dsn", env("TGWEBDAV_DSN", ""), "PostgreSQL DSN (or TGWEBDAV_DSN)")
-		webdavAddr = fs.String("webdav-addr", env("TGWEBDAV_WEBDAV_ADDR", ":8080"), "WebDAV listen address")
-		mgmtAddr   = fs.String("mgmt-addr", env("TGWEBDAV_MGMT_ADDR", ":8081"), "Management API listen address")
-		cacheDir   = fs.String("cache-dir", env("TGWEBDAV_CACHE_DIR", ""), "blob cache directory (default: user cache dir)")
-		cacheSize  = fs.String("cache-size", env("TGWEBDAV_CACHE_SIZE", "1GiB"), "blob cache size (e.g. 512MiB, 2GiB)")
-		firstUser  = fs.String("first-user", env("TGWEBDAV_FIRST_USER", ""), "bootstrap admin as login:password")
-		logLevel   = fs.String("log-level", env("TGWEBDAV_LOG_LEVEL", "info"), "log level: debug|info|warn|error")
-		_          = fs.String("env-file", envFile, ".env file to load")
-	)
-	if err := fs.Parse(args); err != nil {
-		return nil, err
+// LoadDotenv loads KEY=VALUE pairs from path into the process environment
+// (without overriding already-set variables) so viper's AutomaticEnv picks them
+// up. A missing file is not an error.
+func LoadDotenv(path string) {
+	_ = loadDotenv(path)
+}
+
+// Resolve builds the Config from flags, environment variables (bound via viper)
+// and defaults, then validates it. Call LoadDotenv first if a .env file is used.
+func Resolve(fs *pflag.FlagSet) (*Config, error) {
+	v := viper.New()
+	v.SetEnvPrefix(envPrefix)
+	v.SetEnvKeyReplacer(strings.NewReplacer("-", "_"))
+	v.AutomaticEnv()
+	if err := v.BindPFlags(fs); err != nil {
+		return nil, fmt.Errorf("bind flags: %w", err)
+	}
+	// Secret material has no flag (env-only); bind it explicitly.
+	for _, k := range []string{"secret-key", "bot-tokens", "channel-ids"} {
+		_ = v.BindEnv(k)
 	}
 
 	cfg := &Config{
-		DSN:        *dsn,
-		WebDAVAddr: *webdavAddr,
-		MgmtAddr:   *mgmtAddr,
-		CacheDir:   *cacheDir,
-		FirstUser:  *firstUser,
-		LogLevel:   *logLevel,
-		BotTokens:  splitNonEmpty(env("TGWEBDAV_BOT_TOKENS", "")),
+		DSN:        v.GetString("dsn"),
+		WebDAVAddr: v.GetString("webdav-addr"),
+		MgmtAddr:   v.GetString("mgmt-addr"),
+		CacheDir:   v.GetString("cache-dir"),
+		FirstUser:  v.GetString("first-user"),
+		LogLevel:   v.GetString("log-level"),
+		BotTokens:  splitNonEmpty(v.GetString("bot-tokens")),
 	}
 
 	if cfg.DSN == "" {
 		return nil, fmt.Errorf("DSN is required (--dsn or TGWEBDAV_DSN)")
 	}
 
-	size, err := ParseSize(*cacheSize)
+	size, err := ParseSize(v.GetString("cache-size"))
 	if err != nil {
-		return nil, fmt.Errorf("invalid --cache-size: %w", err)
+		return nil, fmt.Errorf("invalid cache-size: %w", err)
 	}
 	cfg.CacheSize = size
 
@@ -88,7 +103,7 @@ func Load(args []string) (*Config, error) {
 		cfg.CacheDir = filepath.Join(base, "tgwebdav")
 	}
 
-	for _, raw := range splitNonEmpty(env("TGWEBDAV_CHANNEL_IDS", "")) {
+	for _, raw := range splitNonEmpty(v.GetString("channel-ids")) {
 		id, err := strconv.ParseInt(strings.TrimSpace(raw), 10, 64)
 		if err != nil {
 			return nil, fmt.Errorf("invalid channel id %q: %w", raw, err)
@@ -96,8 +111,7 @@ func Load(args []string) (*Config, error) {
 		cfg.ChannelIDs = append(cfg.ChannelIDs, id)
 	}
 
-	if sk := env("TGWEBDAV_SECRET_KEY", ""); sk != "" {
-		// Derive a stable 32-byte key from the provided secret.
+	if sk := v.GetString("secret-key"); sk != "" {
 		sum := sha256.Sum256([]byte(sk))
 		cfg.SecretKey = sum[:]
 	} else if len(cfg.BotTokens) > 0 {
@@ -118,13 +132,6 @@ func (c *Config) FirstUserParts() (login, password string, ok bool) {
 	}
 	login, password, _ = strings.Cut(c.FirstUser, ":")
 	return login, password, login != "" && password != ""
-}
-
-func env(key, def string) string {
-	if v, ok := os.LookupEnv(key); ok {
-		return v
-	}
-	return def
 }
 
 func splitNonEmpty(s string) []string {
