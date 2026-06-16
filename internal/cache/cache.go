@@ -237,6 +237,17 @@ func (c *Cache) Stats() (bytes int64, entries int) {
 	return c.total, len(c.index)
 }
 
+// Has reports whether a blob is cached, without reading its bytes from disk.
+func (c *Cache) Has(id uuid.UUID) bool {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	_, ok := c.index[id]
+	return ok
+}
+
+// Capacity returns the maximum cache size in bytes.
+func (c *Cache) Capacity() int64 { return c.maxBytes }
+
 // Start runs the idle janitor until ctx is cancelled. Every c.tick it removes
 // every entry whose last access is older than idleTTL. If idleTTL is
 // non-positive, idle eviction is disabled and Start simply waits for ctx.

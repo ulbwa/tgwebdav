@@ -14,6 +14,7 @@ import (
 	"errors"
 	"fmt"
 	"log/slog"
+	"sync"
 	"time"
 
 	"github.com/google/uuid"
@@ -29,6 +30,9 @@ type Reader struct {
 	cache  domain.BlobCache
 	stats  domain.StatRecorder
 	logger *slog.Logger
+
+	// prefetchConcurrency caps parallel read-ahead downloads.
+	prefetchConcurrency int
 
 	// now is overridable in tests; defaults to time.Now.
 	now func() time.Time
@@ -48,14 +52,67 @@ func NewReader(
 		logger = slog.New(slog.DiscardHandler)
 	}
 	return &Reader{
-		repos:  r,
-		tx:     tx,
-		tg:     tg,
-		cache:  cache,
-		stats:  stats,
-		logger: logger,
-		now:    time.Now,
+		repos:               r,
+		tx:                  tx,
+		tg:                  tg,
+		cache:               cache,
+		stats:               stats,
+		logger:              logger,
+		prefetchConcurrency: 8,
+		now:                 time.Now,
 	}
+}
+
+// Prefetch warms the cache by downloading blobIDs concurrently, bounded so the
+// prefetched data does not exceed the cache capacity (older entries the reader
+// still needs would otherwise be evicted). Already-cached blobs are skipped.
+// It blocks until the bounded set is fetched; run it in a goroutine.
+func (r *Reader) Prefetch(ctx context.Context, blobIDs []uuid.UUID) {
+	capacity := r.cache.Capacity()
+	if capacity <= 0 || len(blobIDs) == 0 {
+		return
+	}
+	// Conservative cap on how many blobs to hold ahead: blobs are < 20 MiB, so
+	// capacity/20MiB pieces are guaranteed to fit. Leave at least one slot.
+	const maxBlob = 20 << 20
+	limit := int(capacity / maxBlob)
+	if limit < 1 {
+		limit = 1
+	}
+
+	conc := r.prefetchConcurrency
+	if conc < 1 {
+		conc = 1
+	}
+	sem := make(chan struct{}, conc)
+	var wg sync.WaitGroup
+
+	fetched := 0
+	for _, id := range blobIDs {
+		if fetched >= limit {
+			break
+		}
+		if ctx.Err() != nil {
+			break
+		}
+		if r.cache.Has(id) {
+			continue
+		}
+		fetched++
+		wg.Add(1)
+		sem <- struct{}{}
+		go func(id uuid.UUID) {
+			defer wg.Done()
+			defer func() { <-sem }()
+			// ReadBlob downloads (via bot selection + recovery) and caches the
+			// blob; the bytes are discarded here — we only want it warm.
+			if _, err := r.ReadBlob(ctx, id); err != nil {
+				r.logger.DebugContext(ctx, "blob: prefetch failed (ignored)",
+					slog.String("blob", id.String()), slog.Any("err", err))
+			}
+		}(id)
+	}
+	wg.Wait()
 }
 
 // candidate is a bot we may try, together with an optional already-cached

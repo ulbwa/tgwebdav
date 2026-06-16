@@ -337,11 +337,14 @@ func (f *fakeTx) WithTx(ctx context.Context, fn func(ctx context.Context, r *dom
 
 // fakeCache is an in-memory BlobCache.
 type fakeCache struct {
-	mu    sync.Mutex
-	items map[uuid.UUID][]byte
+	mu       sync.Mutex
+	items    map[uuid.UUID][]byte
+	capacity int64
 }
 
-func newFakeCache() *fakeCache { return &fakeCache{items: map[uuid.UUID][]byte{}} }
+func newFakeCache() *fakeCache {
+	return &fakeCache{items: map[uuid.UUID][]byte{}, capacity: 1 << 30}
+}
 
 func (c *fakeCache) Get(id uuid.UUID) ([]byte, bool) {
 	c.mu.Lock()
@@ -361,6 +364,17 @@ func (c *fakeCache) Remove(id uuid.UUID) {
 	c.mu.Unlock()
 }
 func (c *fakeCache) Stats() (int64, int) { return 0, 0 }
+func (c *fakeCache) Has(id uuid.UUID) bool {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	_, ok := c.items[id]
+	return ok
+}
+func (c *fakeCache) Capacity() int64 {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	return c.capacity
+}
 
 // noopStats implements domain.StatRecorder doing nothing.
 type noopStats struct{}
@@ -387,6 +401,10 @@ type fakeTG struct {
 	forwardCalls []string
 	// deleteCalls records message ids deleted.
 	deleteCalls []int64
+	// downloadDelay/conc/maxConc expose DownloadFile concurrency to tests.
+	downloadDelay   time.Duration
+	downloadConc    int
+	downloadMaxConc int
 }
 
 type tgResult struct {
@@ -408,12 +426,29 @@ func newFakeTG() *fakeTG {
 func (t *fakeTG) DownloadFile(_ context.Context, _ *domain.Bot, fileID string) ([]byte, error) {
 	t.mu.Lock()
 	t.downloadCalls = append(t.downloadCalls, fileID)
+	t.downloadConc++
+	if t.downloadConc > t.downloadMaxConc {
+		t.downloadMaxConc = t.downloadConc
+	}
 	r, ok := t.downloadByFileID[fileID]
+	delay := t.downloadDelay
+	t.mu.Unlock()
+	if delay > 0 {
+		time.Sleep(delay)
+	}
+	t.mu.Lock()
+	t.downloadConc--
 	t.mu.Unlock()
 	if !ok {
 		return nil, domain.ErrTelegramNotFound
 	}
 	return r.data, r.err
+}
+
+func (t *fakeTG) maxDownloadConcurrency() int {
+	t.mu.Lock()
+	defer t.mu.Unlock()
+	return t.downloadMaxConc
 }
 
 func (t *fakeTG) ForwardMessage(_ context.Context, bot *domain.Bot, _, _, _ int64) (domain.TGSendResult, error) {
@@ -517,7 +552,61 @@ func (h *harness) addStoredBlob(messageID int64) *domain.Blob {
 	return b
 }
 
+// prefetchable creates n stored blobs, each with a cached file_id for bot that
+// downloads to deterministic bytes, and returns their ids in order.
+func (h *harness) prefetchable(bot *domain.Bot, n int) []uuid.UUID {
+	ids := make([]uuid.UUID, n)
+	for i := 0; i < n; i++ {
+		blob := h.addStoredBlob(int64(100 + i))
+		fileID := blob.ID.String()
+		_ = h.files.Upsert(context.Background(), &domain.BlobBotFile{BlobID: blob.ID, BotID: bot.ID, FileID: fileID})
+		h.tg.downloadByFileID[fileID] = tgResult{data: []byte("blob-" + fileID)}
+		ids[i] = blob.ID
+	}
+	return ids
+}
+
 // ---- tests -----------------------------------------------------------------
+
+func TestPrefetchDownloadsInParallel(t *testing.T) {
+	h := newHarness(t)
+	bot := h.addBot("b1")
+	h.tg.downloadDelay = 30 * time.Millisecond
+	ids := h.prefetchable(bot, 6)
+
+	h.reader.Prefetch(context.Background(), ids)
+
+	if mc := h.tg.maxDownloadConcurrency(); mc < 2 {
+		t.Errorf("max concurrent downloads = %d, want >= 2 (prefetch ran sequentially)", mc)
+	} else {
+		t.Logf("observed max concurrent downloads = %d", mc)
+	}
+	for _, id := range ids {
+		if !h.cache.Has(id) {
+			t.Errorf("blob %s not warmed into cache", id)
+		}
+	}
+}
+
+func TestPrefetchBoundedByCacheCapacity(t *testing.T) {
+	h := newHarness(t)
+	bot := h.addBot("b1")
+	// Capacity for ~2 blobs (limit = capacity / 20MiB).
+	h.cache.capacity = 2 * (20 << 20)
+	ids := h.prefetchable(bot, 6)
+
+	h.reader.Prefetch(context.Background(), ids)
+
+	cached := 0
+	for _, id := range ids {
+		if h.cache.Has(id) {
+			cached++
+		}
+	}
+	if cached != 2 {
+		t.Errorf("prefetched %d blobs, want 2 (bounded by cache capacity)", cached)
+	}
+}
 
 func TestReadBlob_NotReadable(t *testing.T) {
 	h := newHarness(t)

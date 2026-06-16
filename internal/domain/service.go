@@ -101,6 +101,10 @@ type BlobCache interface {
 	Get(id uuid.UUID) ([]byte, bool)
 	Put(id uuid.UUID, data []byte) error
 	Remove(id uuid.UUID)
+	// Has reports whether a blob is cached without reading its bytes.
+	Has(id uuid.UUID) bool
+	// Capacity is the maximum cache size in bytes (used to bound read-ahead).
+	Capacity() int64
 	// Stats reports current cache size in bytes and number of entries.
 	Stats() (bytes int64, entries int)
 }
@@ -111,6 +115,11 @@ type BlobCache interface {
 // disk cache, bot selection, cross-bot recovery, and cascade handling.
 type BlobReader interface {
 	ReadBlob(ctx context.Context, blobID uuid.UUID) ([]byte, error)
+	// Prefetch warms the cache by downloading the given blobs concurrently
+	// (best-effort), bounded so prefetched data does not exceed cache capacity.
+	// It blocks until the bounded set is fetched; callers typically run it in a
+	// goroutine. Errors are ignored — they surface on the real read.
+	Prefetch(ctx context.Context, blobIDs []uuid.UUID)
 }
 
 // ---- Limits port -----------------------------------------------------------

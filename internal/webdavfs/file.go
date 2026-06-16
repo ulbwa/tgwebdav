@@ -137,7 +137,9 @@ type readFile struct {
 	src io.Reader // throttled assembler positioned at pos; rebuilt after Seek
 }
 
-// ensureExtents loads the node's extents on first read (stored nodes only).
+// ensureExtents loads the node's extents on first read (stored nodes only) and,
+// for multi-blob files, kicks off a parallel read-ahead that warms the cache
+// with the file's blobs while the client reads sequentially.
 func (r *readFile) ensureExtents() error {
 	if r.loaded || r.node.State != domain.NodeStored {
 		return nil
@@ -148,7 +150,26 @@ func (r *readFile) ensureExtents() error {
 	}
 	r.extents = extents
 	r.loaded = true
+
+	if ids := distinctBlobIDs(extents); len(ids) > 1 {
+		go r.fs.blobs.Prefetch(r.ctx, ids)
+	}
 	return nil
+}
+
+// distinctBlobIDs returns the blob ids referenced by extents in read order,
+// each once.
+func distinctBlobIDs(extents []domain.Extent) []uuid.UUID {
+	seen := make(map[uuid.UUID]struct{}, len(extents))
+	ids := make([]uuid.UUID, 0, len(extents))
+	for _, e := range extents {
+		if _, ok := seen[e.BlobID]; ok {
+			continue
+		}
+		seen[e.BlobID] = struct{}{}
+		ids = append(ids, e.BlobID)
+	}
+	return ids
 }
 
 func (r *readFile) Close() error              { return nil }
