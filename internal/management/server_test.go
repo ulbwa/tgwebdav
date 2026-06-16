@@ -40,9 +40,9 @@ func (f *fakeAuth) HashPassword(pw string) (string, error) { return "hash:" + pw
 // fakeUserRepo is a no-op domain.UserRepository returning a fixed list.
 type fakeUserRepo struct{ users []domain.User }
 
-func (r *fakeUserRepo) Create(context.Context, *domain.User) error        { return nil }
-func (r *fakeUserRepo) Update(context.Context, *domain.User) error        { return nil }
-func (r *fakeUserRepo) Delete(context.Context, uuid.UUID) error           { return nil }
+func (r *fakeUserRepo) Create(context.Context, *domain.User) error { return nil }
+func (r *fakeUserRepo) Update(context.Context, *domain.User) error { return nil }
+func (r *fakeUserRepo) Delete(context.Context, uuid.UUID) error    { return nil }
 func (r *fakeUserRepo) GetByID(context.Context, uuid.UUID) (*domain.User, error) {
 	return nil, domain.ErrNotFound
 }

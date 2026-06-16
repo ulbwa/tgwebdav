@@ -375,9 +375,28 @@ func (h *Handlers) CreateUserToken(w http.ResponseWriter, r *http.Request, userI
 	})
 }
 
-// DeleteUserToken handles DELETE /api/v1/users/{userId}/tokens/{tokenId}.
+// DeleteUserToken handles DELETE /api/v1/users/{userId}/tokens/{tokenId}. The
+// token is deleted only if it actually belongs to userId; a token id under the
+// wrong user path yields 404 Not Found rather than deleting it.
 func (h *Handlers) DeleteUserToken(w http.ResponseWriter, r *http.Request, userId api.UserId, tokenId api.TokenId) {
-	if err := h.repos.Tokens.Delete(r.Context(), tokenId); err != nil {
+	ctx := r.Context()
+	tokens, err := h.repos.Tokens.ListByUser(ctx, userId)
+	if err != nil {
+		h.writeError(w, err)
+		return
+	}
+	found := false
+	for i := range tokens {
+		if tokens[i].ID == tokenId {
+			found = true
+			break
+		}
+	}
+	if !found {
+		h.writeError(w, domain.ErrNotFound)
+		return
+	}
+	if err := h.repos.Tokens.Delete(ctx, tokenId); err != nil {
 		h.writeError(w, err)
 		return
 	}
