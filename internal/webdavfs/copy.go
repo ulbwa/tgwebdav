@@ -48,6 +48,30 @@ func (f *FileSystem) Copy(ctx context.Context, src, dst string, recursive, overw
 		if !parent.IsDir {
 			return os.ErrNotExist
 		}
+		// Quota: a copy adds the source's logical size to the user's usage. If the
+		// destination already exists (overwrite) its freed size is discounted.
+		if user.QuotaBytes > 0 {
+			used, err := r.Nodes.SumSizeByUser(ctx, user.ID)
+			if err != nil {
+				return err
+			}
+			add, err := subtreeSize(ctx, r, user.ID, s)
+			if err != nil {
+				return err
+			}
+			if existing, err := r.Nodes.GetByPath(ctx, user.ID, d); err == nil {
+				freed, err := subtreeSize(ctx, r, user.ID, existing.Path)
+				if err != nil {
+					return err
+				}
+				add -= freed
+			} else if !errors.Is(err, domain.ErrNotFound) {
+				return err
+			}
+			if used+add > user.QuotaBytes {
+				return domain.ErrQuotaExceeded
+			}
+		}
 		if existing, err := r.Nodes.GetByPath(ctx, user.ID, d); err == nil {
 			if !overwrite {
 				return os.ErrExist
@@ -60,6 +84,21 @@ func (f *FileSystem) Copy(ctx context.Context, src, dst string, recursive, overw
 		}
 		return f.copyNode(ctx, r, user.ID, srcNode, d, &parent.ID, recursive)
 	})
+}
+
+// subtreeSize sums the logical size of all file nodes at or below path p.
+func subtreeSize(ctx context.Context, r *domain.Repositories, userID uuid.UUID, p string) (int64, error) {
+	nodes, err := r.Nodes.ListSubtree(ctx, userID, p)
+	if err != nil {
+		return 0, err
+	}
+	var sum int64
+	for i := range nodes {
+		if !nodes[i].IsDir {
+			sum += nodes[i].Size
+		}
+	}
+	return sum, nil
 }
 
 func (f *FileSystem) copyNode(ctx context.Context, r *domain.Repositories, userID uuid.UUID, srcNode *domain.Node, dstPath string, dstParentID *uuid.UUID, recursive bool) error {

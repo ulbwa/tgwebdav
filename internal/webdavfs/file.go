@@ -83,9 +83,11 @@ type dirFile struct {
 	pos      int
 }
 
-func (d *dirFile) Close() error                 { return nil }
-func (d *dirFile) Read([]byte) (int, error)     { return 0, fmt.Errorf("read on directory: %w", os.ErrInvalid) }
-func (d *dirFile) Write([]byte) (int, error)    { return 0, os.ErrPermission }
+func (d *dirFile) Close() error { return nil }
+func (d *dirFile) Read([]byte) (int, error) {
+	return 0, fmt.Errorf("read on directory: %w", os.ErrInvalid)
+}
+func (d *dirFile) Write([]byte) (int, error)      { return 0, os.ErrPermission }
 func (d *dirFile) Seek(int64, int) (int64, error) { return 0, os.ErrInvalid }
 
 func (d *dirFile) Stat() (fs.FileInfo, error) { return infoFromNode(d.node), nil }
@@ -313,7 +315,7 @@ type writeFile struct {
 
 const walChunkSize = 1 << 20 // 1 MiB
 
-func (w *writeFile) Read([]byte) (int, error)  { return 0, os.ErrPermission }
+func (w *writeFile) Read([]byte) (int, error) { return 0, os.ErrPermission }
 func (w *writeFile) Seek(int64, int) (int64, error) {
 	return 0, os.ErrInvalid
 }

@@ -455,9 +455,12 @@ func (f *FileSystem) removeWithin(ctx context.Context, r *domain.Repositories, u
 	return r.Nodes.Delete(ctx, node.ID)
 }
 
-// CheckQuota reports whether adding `additional` bytes would exceed the acting
-// user's quota; used by the server to answer PUT with 507 before streaming.
-func (f *FileSystem) CheckQuota(ctx context.Context, additional int64) error {
+// CheckQuota reports whether writing `additional` bytes to path p would exceed
+// the acting user's quota; used by the server to answer PUT with 507 before
+// streaming. If a file already exists at p it is about to be overwritten, so its
+// current size (already included in the user's usage) is discounted to avoid a
+// spurious 507 on an in-place overwrite.
+func (f *FileSystem) CheckQuota(ctx context.Context, p string, additional int64) error {
 	user, err := acting(ctx)
 	if err != nil {
 		return err
@@ -467,6 +470,11 @@ func (f *FileSystem) CheckQuota(ctx context.Context, additional int64) error {
 	}
 	used, err := f.repos.Nodes.SumSizeByUser(ctx, user.ID)
 	if err != nil {
+		return err
+	}
+	if existing, err := f.repos.Nodes.GetByPath(ctx, user.ID, normalize(p)); err == nil && !existing.IsDir {
+		used -= existing.Size
+	} else if err != nil && !errors.Is(err, domain.ErrNotFound) {
 		return err
 	}
 	if used+additional > user.QuotaBytes {

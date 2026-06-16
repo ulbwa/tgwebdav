@@ -13,15 +13,15 @@ import (
 
 func TestNormalize(t *testing.T) {
 	cases := map[string]string{
-		"":                  "/",
-		"/":                 "/",
-		"/foo/":             "/foo",
-		"foo/bar":           "/foo/bar",
-		"/foo/../bar":       "/bar",
-		"/../etc/passwd":    "/etc/passwd", // cannot escape root
-		"/../../../../x":    "/x",
-		"/a//b":             "/a/b",
-		"/foo/./bar":        "/foo/bar",
+		"":                   "/",
+		"/":                  "/",
+		"/foo/":              "/foo",
+		"foo/bar":            "/foo/bar",
+		"/foo/../bar":        "/bar",
+		"/../etc/passwd":     "/etc/passwd", // cannot escape root
+		"/../../../../x":     "/x",
+		"/a//b":              "/a/b",
+		"/foo/./bar":         "/foo/bar",
 		"/foo/bar/../../qux": "/qux",
 	}
 	for in, want := range cases {
