@@ -85,7 +85,10 @@ rclone ls tg:
 
 Only bootstrap settings are passed via flags/env; everything tunable at runtime
 (blob size, WAL idle timeout, max file size, eviction threshold) lives in the
-database and is edited through the Management API.
+database and is edited through the Management API. The CLI is a
+[cobra](https://github.com/spf13/cobra) command and environment variables are
+bound with [viper](https://github.com/spf13/viper) (prefix `TGWEBDAV_`);
+precedence is flag > environment variable > `.env` file > default.
 
 | Flag | Env | Default | Description |
 |------|-----|---------|-------------|
@@ -196,20 +199,21 @@ port interfaces; every other package implements a port and depends only on the
 domain contracts.
 
 ```
-cmd/tgwebdav/              entrypoint, wiring, two servers, graceful shutdown
+cmd/tgwebdav/              entrypoint (cobra command), wiring, graceful shutdown
+api/openapi.yaml           Management API OpenAPI 3 spec (embedded + served)
+db/migrations/             embedded dbmate migrations (*.sql) + slog-logging runner
 internal/domain/           entities, errors, repository & service ports
-internal/config/           flag/env/.env configuration
+internal/config/           cobra flags + viper env binding (+ .env loader)
 internal/storage/postgres/ GORM repositories + transactional unit-of-work
-internal/storage/migrations/ embedded dbmate migrations + runner
 internal/telegram/         Bot API client (per-bot pacing, typed errors)
 internal/cache/            disk LRU blob cache
 internal/blob/             read path: bot selection, recovery, cascade
-internal/wal/              packer worker (state machine, crash-safe)
+internal/wal/              packer worker (deferred/lease-guarded finalize)
 internal/webdavfs/         webdav.FileSystem over the store
 internal/auth/             argon2id, basic/bearer, impersonation
 internal/limits/           per-user quota / bandwidth / rate limiting
 internal/services/         bot, channel and settings services
-internal/management/       OpenAPI spec + generated server + handlers
+internal/management/       generated server + handlers (spec lives in api/)
 internal/stats/            counters + gauges → time series
 internal/server/           WebDAV HTTP server
 ```
