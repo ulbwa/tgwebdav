@@ -46,11 +46,11 @@ func (f *fakeUserRepo) GetByLogin(_ context.Context, login string) (*domain.User
 	return nil, domain.ErrNotFound
 }
 
-func (f *fakeUserRepo) Create(context.Context, *domain.User) error      { return errors.New("unused") }
-func (f *fakeUserRepo) Update(context.Context, *domain.User) error      { return errors.New("unused") }
-func (f *fakeUserRepo) Delete(context.Context, uuid.UUID) error         { return errors.New("unused") }
-func (f *fakeUserRepo) List(context.Context) ([]domain.User, error)     { return nil, errors.New("unused") }
-func (f *fakeUserRepo) Count(context.Context) (int64, error)            { return 0, errors.New("unused") }
+func (f *fakeUserRepo) Create(context.Context, *domain.User) error  { return errors.New("unused") }
+func (f *fakeUserRepo) Update(context.Context, *domain.User) error  { return errors.New("unused") }
+func (f *fakeUserRepo) Delete(context.Context, uuid.UUID) error     { return errors.New("unused") }
+func (f *fakeUserRepo) List(context.Context) ([]domain.User, error) { return nil, errors.New("unused") }
+func (f *fakeUserRepo) Count(context.Context) (int64, error)        { return 0, errors.New("unused") }
 
 var _ domain.UserRepository = (*fakeUserRepo)(nil)
 

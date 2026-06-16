@@ -26,6 +26,15 @@ import (
 // change invalidates it immediately.
 const verifyCacheTTL = 30 * time.Second
 
+// decoyPasswordHash is a valid argon2id PHC string for a throwaway password. It
+// exists solely to neutralise a username-enumeration timing side-channel: when a
+// login is unknown there is no stored hash to verify against, so we run a dummy
+// argon2id verification against this constant instead. That makes the work done
+// on the not-found path comparable to the found-but-wrong-password path, so the
+// response time no longer reveals whether a username exists. The result is
+// always discarded. It is never used to authenticate anyone.
+const decoyPasswordHash = "$argon2id$v=19$m=65536,t=1,p=4$a+F+q6BJpooDXaEZpElung$/DPMn8Z+G5x553RSdYsslDlkU169ThOtw6vCo3T96s8"
+
 // Service authenticates principals against the user and token repositories. It
 // is safe for concurrent use.
 type Service struct {
@@ -138,6 +147,13 @@ func (s *Service) lookupAndVerify(ctx context.Context, login, password string) (
 	user, err := s.users.GetByLogin(ctx, login)
 	if err != nil {
 		if errors.Is(err, domain.ErrNotFound) {
+			// Run a dummy argon2id verification against a fixed valid hash so the
+			// not-found path spends the same (deliberately slow) work as the
+			// found-but-wrong-password path. Without this, an unknown login would
+			// return immediately while a known one pays the argon2id cost, and the
+			// response-time difference would let an attacker enumerate usernames.
+			// The result is intentionally discarded.
+			_, _ = VerifyPassword(decoyPasswordHash, password)
 			return nil, fmt.Errorf("auth: unknown user %q: %w", login, domain.ErrUnauthorized)
 		}
 		return nil, fmt.Errorf("auth: load user: %w", err)
