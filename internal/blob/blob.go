@@ -122,7 +122,10 @@ func (r *Reader) ReadBlob(ctx context.Context, blobID uuid.UUID) ([]byte, error)
 
 	// permGone records whether any candidate proved (via forward-recovery) that
 	// the underlying message is definitively gone. Stale cached file_ids do NOT
-	// set this — only a not-found from forwarding does.
+	// set this — only a not-found from forwarding does. We do NOT stop at the
+	// first such signal: a different member bot may still be able to forward the
+	// message (cross-bot recovery), so we try every candidate before concluding
+	// the message is permanently gone.
 	permGone := false
 
 	for _, c := range candidates {
@@ -137,16 +140,18 @@ func (r *Reader) ReadBlob(ctx context.Context, blobID uuid.UUID) ([]byte, error)
 		}
 		if gone {
 			permGone = true
-			// The message is gone; no other bot can recover it. Stop trying.
-			break
 		}
-		// Transient (rate limit / forbidden / transport): move to the next bot.
+		// Transient (rate limit / forbidden / transport) or a single bot's
+		// not-found: move to the next bot.
 		r.logger.WarnContext(ctx, "blob: candidate bot failed, trying next",
 			slog.String("blob", blobID.String()),
 			slog.String("bot", c.bot.Username),
 			slog.Any("err", err))
 	}
 
+	// Only after every member bot failed to recover the message — and at least
+	// one of them got a definitive not-found from forwarding — do we conclude the
+	// message is permanently gone.
 	if permGone {
 		r.markPermUnavailable(ctx, blob)
 		return nil, fmt.Errorf("blob %s message gone: %w", blobID, domain.ErrBlobUnavailable)

@@ -48,9 +48,9 @@ func (f *fakeBlobs) SetState(_ context.Context, id uuid.UUID, state domain.BlobS
 }
 
 // Unused BlobRepository methods.
-func (f *fakeBlobs) Create(context.Context, *domain.Blob) error               { return nil }
-func (f *fakeBlobs) Update(context.Context, *domain.Blob) error               { return nil }
-func (f *fakeBlobs) AddRefcount(context.Context, uuid.UUID, int64) error      { return nil }
+func (f *fakeBlobs) Create(context.Context, *domain.Blob) error          { return nil }
+func (f *fakeBlobs) Update(context.Context, *domain.Blob) error          { return nil }
+func (f *fakeBlobs) AddRefcount(context.Context, uuid.UUID, int64) error { return nil }
 func (f *fakeBlobs) ListByChannel(context.Context, uuid.UUID) ([]domain.Blob, error) {
 	return nil, nil
 }
@@ -295,6 +295,9 @@ func (f *fakeNodes) ClaimBufferedForPacking(context.Context, string, time.Durati
 	return nil, nil
 }
 func (f *fakeNodes) ReleaseLease(context.Context, uuid.UUID) error { return nil }
+func (f *fakeNodes) MarkStoredIfOwner(context.Context, uuid.UUID, string) (bool, error) {
+	return false, nil
+}
 
 // fakeEvents records logged events.
 type fakeEvents struct {
