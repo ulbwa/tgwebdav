@@ -13,17 +13,28 @@ import (
 	"errors"
 	"fmt"
 	"strings"
+	"sync"
 	"time"
 
 	"github.com/ulbwa/tgwebdav/internal/domain"
 )
 
+// verifyCacheTTL bounds how long a successful argon2id verification is trusted
+// without recomputation. WebDAV clients resend Basic credentials on every
+// request, so without this cache the (deliberately slow) argon2id hash would run
+// on every call. The cache key includes the stored password hash, so a password
+// change invalidates it immediately.
+const verifyCacheTTL = 30 * time.Second
+
 // Service authenticates principals against the user and token repositories. It
-// holds no mutable state and is safe for concurrent use.
+// is safe for concurrent use.
 type Service struct {
 	users  domain.UserRepository
 	tokens domain.APITokenRepository
 	now    func() time.Time
+
+	vcMu sync.Mutex
+	vc   map[string]time.Time // verification cache: key → expiry
 }
 
 // compile-time assertion that *Service satisfies the domain contract.
@@ -35,7 +46,44 @@ func NewService(users domain.UserRepository, tokens domain.APITokenRepository) *
 		users:  users,
 		tokens: tokens,
 		now:    time.Now,
+		vc:     make(map[string]time.Time),
 	}
+}
+
+// verifiedRecently reports whether key was verified within the TTL.
+func (s *Service) verifiedRecently(key string) bool {
+	s.vcMu.Lock()
+	defer s.vcMu.Unlock()
+	exp, ok := s.vc[key]
+	if !ok {
+		return false
+	}
+	if s.now().After(exp) {
+		delete(s.vc, key)
+		return false
+	}
+	return true
+}
+
+// markVerified records a successful verification, opportunistically pruning
+// expired entries to bound memory.
+func (s *Service) markVerified(key string) {
+	s.vcMu.Lock()
+	defer s.vcMu.Unlock()
+	now := s.now()
+	if len(s.vc) > 4096 {
+		for k, exp := range s.vc {
+			if now.After(exp) {
+				delete(s.vc, k)
+			}
+		}
+	}
+	s.vc[key] = now.Add(verifyCacheTTL)
+}
+
+func verifyCacheKey(login, hash, password string) string {
+	sum := sha256.Sum256([]byte(login + "\x00" + hash + "\x00" + password))
+	return hex.EncodeToString(sum[:])
 }
 
 // AuthenticateBasic resolves an HTTP Basic credential into a Principal.
@@ -95,6 +143,13 @@ func (s *Service) lookupAndVerify(ctx context.Context, login, password string) (
 		return nil, fmt.Errorf("auth: load user: %w", err)
 	}
 
+	// Fast path: skip the (deliberately slow) argon2id verification if this exact
+	// (login, stored hash, password) tuple was verified recently.
+	key := verifyCacheKey(login, user.PasswordHash, password)
+	if s.verifiedRecently(key) {
+		return user, nil
+	}
+
 	ok, err := VerifyPassword(user.PasswordHash, password)
 	if err != nil {
 		// A stored hash we cannot parse is a credential failure, not a 500: we
@@ -104,6 +159,7 @@ func (s *Service) lookupAndVerify(ctx context.Context, login, password string) (
 	if !ok {
 		return nil, fmt.Errorf("auth: bad password for %q: %w", login, domain.ErrUnauthorized)
 	}
+	s.markVerified(key)
 	return user, nil
 }
 
