@@ -1,14 +1,23 @@
 // Package wal contains the background packer worker. The WebDAV write path
 // appends file content as chunks into wal_chunks (via the WAL repository); the
-// packer accumulates buffered files into immutable Telegram blobs (< 20 MiB),
-// splitting oversized files across several blobs and packing multiple small
-// files into one, then records blobs + extents and removes the WAL rows.
+// packer reads buffered files, splits each into immutable blobs (< 20 MiB),
+// uploads those blobs to Telegram CONCURRENTLY across the available bots, and
+// records the blob + extents and removes the WAL rows once a node's blobs have
+// all landed.
 //
-// Crash-safety: WAL rows are deleted only inside the same transaction that
-// records the blob and extents and marks the node stored. If the process dies
-// after a successful upload but before that commit, the node simply stays
-// buffered (its packer lease expires) and is re-packed later — producing an
-// orphaned, unreferenced Telegram message but never losing or corrupting data.
+// Parallelism: a builder goroutine plans blobs (splitting large files into
+// blob-sized pieces and packing small files together) and feeds them to a pool
+// of upload workers; each worker uploads a different blob through a different
+// bot at the same time, so a large file saturates all bots instead of trickling
+// through one. A node is finalized only after every one of its blobs is stored.
+//
+// Crash-safety / correctness: a blob is created with refcount 0; its extents are
+// written and refcounts bumped only when the owning node is finalized, in one
+// transaction guarded by MarkStoredIfOwner (atomic buffered→stored iff this
+// worker still holds the lease). So a partially-uploaded or lost-lease node
+// never leaves committed extents behind — it is re-packed from the still-present
+// WAL, and the already-uploaded blobs become orphans (refcount 0) that the GC
+// reclaims after a grace period. WAL rows are deleted only at finalization.
 package wal
 
 import (
@@ -16,6 +25,7 @@ import (
 	"errors"
 	"fmt"
 	"log/slog"
+	"sync"
 	"time"
 
 	"github.com/google/uuid"
@@ -23,7 +33,7 @@ import (
 	"github.com/ulbwa/tgwebdav/internal/domain"
 )
 
-// Packer is the background worker that flushes buffered nodes into blobs.
+// Packer is the background worker that uploads buffered nodes into blobs.
 type Packer struct {
 	repos    *domain.Repositories
 	tx       domain.TxManager
@@ -38,13 +48,8 @@ type Packer struct {
 	leaseFor     time.Duration
 	pollInterval time.Duration
 	batchLimit   int
-
-	// nodeExtents accumulates a node's extents across the (possibly several)
-	// blobs it spans. Extents are written to the DB only when the node is
-	// finalized, atomically and guarded by lease ownership, so a partially
-	// packed node never leaves committed extents behind (see finalizePending).
-	// Owned by the single Run goroutine; no locking needed.
-	nodeExtents map[uuid.UUID][]domain.Extent
+	// uploadConcurrency caps parallel blob uploads. 0 = auto (one per enabled bot).
+	uploadConcurrency int
 }
 
 // NewPacker builds a packer. leaseOwner identifies this worker for crash-safe
@@ -75,47 +80,126 @@ func NewPacker(
 		leaseFor:     10 * time.Minute,
 		pollInterval: 250 * time.Millisecond,
 		batchLimit:   64,
-		nodeExtents:  make(map[uuid.UUID][]domain.Extent),
 	}
 }
 
-// segment is one contiguous (node → current blob) span awaiting an extent.
-type segment struct {
-	nodeID     uuid.UUID
+// track holds the in-flight state of one node being packed. remaining counts the
+// node's blobs not yet stored; planned is set once the builder has emitted all
+// of them; extents accumulate (one per blob the node touches) and are written at
+// finalization. All fields are guarded by packState.mu.
+type track struct {
+	node      domain.Node
+	remaining int
+	planned   bool
+	failed    bool
+	extents   []domain.Extent
+}
+
+// blobJob is one blob ready to upload: its bytes plus the distinct tracks whose
+// data it contains (decremented and possibly finalized once it is stored).
+type blobJob struct {
+	blobID uuid.UUID
+	data   []byte
+	tracks []*track
+}
+
+// pendingExtent is one (node → current blob) span accumulated in the small-file
+// builder buffer before the blob is sealed.
+type pendingExtent struct {
+	track      *track
 	seq        int64
 	fileOffset int64
 	blobOffset int64
 	length     int64
 }
 
-// run accumulates bytes for the blob currently being built.
+// run accumulates bytes for the small-file blob currently being built.
 type run struct {
 	buf  []byte
-	segs []segment
+	segs []pendingExtent
 }
 
-// Run executes the packer loop until ctx is cancelled.
-func (p *Packer) Run(ctx context.Context) {
-	p.log.Info("packer started", "lease_owner", p.leaseOwner)
-	cur := &run{}
-	var pending []domain.Node // fully-appended nodes awaiting the next flush
-	lastActivity := time.Time{}
+// packState is the shared, mutex-guarded coordination between the builder and
+// the upload workers.
+type packState struct {
+	mu sync.Mutex
+	// pendingSmall are small-file tracks whose bytes sit in the current builder
+	// buffer; they become planned when that buffer is sealed.
+	pendingSmall []*track
+}
 
+// Run executes the packer until ctx is cancelled.
+func (p *Packer) Run(ctx context.Context) {
+	n := p.workerCount(ctx)
+	p.log.Info("packer started", "lease_owner", p.leaseOwner, "upload_workers", n)
+
+	// Uploads/finalization run on a background context so a clean shutdown can
+	// drain queued blobs; the builder stops claiming when ctx is cancelled.
+	uploadCtx, cancelUpload := context.WithCancel(context.Background())
+	jobs := make(chan blobJob, n)
+	st := &packState{}
+
+	var wg sync.WaitGroup
+	for i := 0; i < n; i++ {
+		wg.Add(1)
+		go func() {
+			defer wg.Done()
+			p.uploadWorker(uploadCtx, jobs, st)
+		}()
+	}
+
+	p.builder(ctx, uploadCtx, jobs, st) // seals the final buffer and closes jobs
+
+	drained := make(chan struct{})
+	go func() { wg.Wait(); close(drained) }()
+	select {
+	case <-drained:
+	case <-time.After(90 * time.Second):
+		p.log.Warn("packer drain timed out, cancelling uploads")
+		cancelUpload()
+		<-drained
+	}
+	cancelUpload()
+	p.log.Info("packer stopped")
+}
+
+// workerCount picks the upload concurrency: the configured value, else one per
+// enabled bot, clamped to [1, 16].
+func (p *Packer) workerCount(ctx context.Context) int {
+	n := p.uploadConcurrency
+	if n <= 0 {
+		bots, err := p.bots.List(ctx)
+		if err == nil {
+			for _, b := range bots {
+				if b.Enabled {
+					n++
+				}
+			}
+		}
+	}
+	if n < 1 {
+		n = 1
+	}
+	if n > 16 {
+		n = 16
+	}
+	return n
+}
+
+// builder claims buffered nodes and emits blob jobs: large files are split into
+// independent blob-sized pieces (each its own job, uploaded in parallel), small
+// files are packed together into shared blobs.
+func (p *Packer) builder(ctx, uploadCtx context.Context, jobs chan<- blobJob, st *packState) {
+	cur := &run{}
+	lastActivity := time.Time{}
 	ticker := time.NewTicker(p.pollInterval)
 	defer ticker.Stop()
 
 	for {
 		select {
 		case <-ctx.Done():
-			// Best-effort final flush so a clean shutdown doesn't strand bytes.
-			if len(cur.buf) > 0 {
-				flushCtx, cancel := context.WithTimeout(context.Background(), 2*time.Minute)
-				if err := p.flush(flushCtx, cur, pending); err != nil {
-					p.releaseLeases(flushCtx, cur, pending)
-				}
-				cancel()
-			}
-			p.log.Info("packer stopped")
+			p.seal(uploadCtx, cur, jobs, st)
+			close(jobs)
 			return
 		case <-ticker.C:
 		}
@@ -137,13 +221,9 @@ func (p *Packer) Run(ctx context.Context) {
 		}
 
 		if len(nodes) == 0 {
-			// Idle flush: emit a partially-filled blob once nothing new arrives.
 			if len(cur.buf) > 0 && !lastActivity.IsZero() && time.Since(lastActivity) >= set.WALIdleTimeout {
-				if err := p.flush(ctx, cur, pending); err != nil {
-					p.log.Warn("idle flush", "err", err)
-					p.releaseLeases(ctx, cur, pending)
-				}
-				cur, pending = &run{}, nil
+				p.seal(uploadCtx, cur, jobs, st)
+				cur = &run{}
 			}
 			continue
 		}
@@ -151,85 +231,213 @@ func (p *Packer) Run(ctx context.Context) {
 		for i := range nodes {
 			node := nodes[i]
 			if node.Size == 0 {
-				// Zero-byte files involve no blob; finalize immediately.
-				if err := p.finalizeEmpty(ctx, node); err != nil {
+				if err := p.finalizeEmpty(uploadCtx, node); err != nil {
 					p.log.Warn("finalize empty node", "node", node.ID, "err", err)
-					_ = p.repos.Nodes.ReleaseLease(ctx, node.ID)
+					_ = p.repos.Nodes.ReleaseLease(uploadCtx, node.ID)
 				}
 				continue
 			}
-			if _, err := p.appendNode(ctx, &cur, &pending, node, blobMax); err != nil {
-				p.log.Warn("append node", "node", node.ID, "err", err)
-				// Drop everything in flight; leases expire and it is retried.
-				p.releaseLeases(ctx, cur, pending)
-				_ = p.repos.Nodes.ReleaseLease(ctx, node.ID)
-				cur, pending = &run{}, nil
-				break
+			t := &track{node: node}
+			if node.Size > blobMax {
+				p.splitLarge(uploadCtx, t, blobMax, jobs, st)
+			} else {
+				p.packSmall(uploadCtx, t, node, blobMax, &cur, jobs, st)
 			}
-			pending = append(pending, node)
 			lastActivity = time.Now()
 		}
 	}
 }
 
-// appendNode streams node's WAL bytes into cur, flushing whenever a blob fills.
-// cur/pending are pointers-to-pointers so a mid-node flush can reset them.
-func (p *Packer) appendNode(ctx context.Context, cur **run, pending *[]domain.Node, node domain.Node, blobMax int64) (bool, error) {
-	flushedAny := false
-	var (
-		seq     int64
-		fileOff int64
-		openIdx = -1
-	)
-	err := p.repos.WAL.EachChunk(ctx, node.ID, func(c domain.WALChunk) error {
-		data := c.Data
-		off := 0
-		for off < len(data) {
-			space := int(blobMax) - len((*cur).buf)
-			if space == 0 {
-				// Current blob is full: flush it (emits all open segments).
-				if err := p.flush(ctx, *cur, *pending); err != nil {
-					return err
-				}
-				flushedAny = true
-				*cur = &run{}
-				*pending = nil
-				openIdx = -1
-				space = int(blobMax)
-			}
-			take := min(space, len(data)-off)
-			if openIdx == -1 {
-				(*cur).segs = append((*cur).segs, segment{
-					nodeID:     node.ID,
-					seq:        seq,
-					fileOffset: fileOff,
-					blobOffset: int64(len((*cur).buf)),
-					length:     0,
-				})
-				openIdx = len((*cur).segs) - 1
-				seq++
-			}
-			(*cur).buf = append((*cur).buf, data[off:off+take]...)
-			(*cur).segs[openIdx].length += int64(take)
-			fileOff += int64(take)
-			off += take
-			if len((*cur).buf) == int(blobMax) {
-				if err := p.flush(ctx, *cur, *pending); err != nil {
-					return err
-				}
-				flushedAny = true
-				*cur = &run{}
-				*pending = nil
-				openIdx = -1
-			}
+// splitLarge emits one independent blob job per blob-sized piece of a large
+// file. The jobs upload in parallel; the node is finalized once all are stored.
+func (p *Packer) splitLarge(ctx context.Context, t *track, blobMax int64, jobs chan<- blobJob, st *packState) {
+	var off, seq int64
+	for off < t.node.Size {
+		n := min(blobMax, t.node.Size-off)
+		data, err := p.repos.WAL.ReadRange(ctx, t.node.ID, off, n)
+		if err != nil {
+			p.log.Warn("read wal range", "node", t.node.ID, "err", err)
+			p.failTrack(ctx, t, st)
+			return
 		}
-		return nil
-	})
-	return flushedAny, err
+		blobID := uuid.New()
+		st.mu.Lock()
+		t.extents = append(t.extents, domain.Extent{
+			ID: uuid.New(), NodeID: t.node.ID, Seq: seq,
+			FileOffset: off, Length: int64(len(data)), BlobID: blobID, BlobOffset: 0,
+		})
+		t.remaining++
+		st.mu.Unlock()
+		jobs <- blobJob{blobID: blobID, data: data, tracks: []*track{t}}
+		off += int64(len(data))
+		seq++
+	}
+	// Every piece is enqueued → the node is fully planned.
+	st.mu.Lock()
+	t.planned = true
+	ready := t.remaining == 0 && !t.failed
+	st.mu.Unlock()
+	if ready {
+		p.finalize(ctx, t)
+	}
 }
 
-// finalizeEmpty stores a zero-length node immediately (no blob involved),
-// guarded by lease ownership like finalizePending.
+// packSmall reads a small file fully and appends it to the current builder
+// buffer, sealing the buffer first if the file would overflow it.
+func (p *Packer) packSmall(ctx context.Context, t *track, node domain.Node, blobMax int64, cur **run, jobs chan<- blobJob, st *packState) {
+	data, err := p.repos.WAL.ReadRange(ctx, node.ID, 0, node.Size)
+	if err != nil {
+		p.log.Warn("read wal range", "node", node.ID, "err", err)
+		_ = p.repos.Nodes.ReleaseLease(ctx, node.ID)
+		return
+	}
+	if int64(len((*cur).buf))+int64(len(data)) > blobMax && len((*cur).buf) > 0 {
+		p.seal(ctx, *cur, jobs, st)
+		*cur = &run{}
+	}
+	(*cur).segs = append((*cur).segs, pendingExtent{
+		track: t, seq: 0, fileOffset: 0, blobOffset: int64(len((*cur).buf)), length: int64(len(data)),
+	})
+	(*cur).buf = append((*cur).buf, data...)
+	st.mu.Lock()
+	st.pendingSmall = append(st.pendingSmall, t)
+	st.mu.Unlock()
+}
+
+// seal turns the current small-file buffer into a blob job, records its extents
+// on each contributing track, and marks those tracks planned.
+func (p *Packer) seal(ctx context.Context, cur *run, jobs chan<- blobJob, st *packState) {
+	if len(cur.buf) == 0 {
+		return
+	}
+	blobID := uuid.New()
+
+	st.mu.Lock()
+	seen := map[*track]bool{}
+	var distinct []*track
+	for _, s := range cur.segs {
+		s.track.extents = append(s.track.extents, domain.Extent{
+			ID: uuid.New(), NodeID: s.track.node.ID, Seq: s.seq,
+			FileOffset: s.fileOffset, Length: s.length, BlobID: blobID, BlobOffset: s.blobOffset,
+		})
+		if !seen[s.track] {
+			seen[s.track] = true
+			s.track.remaining++
+			distinct = append(distinct, s.track)
+		}
+	}
+	pending := st.pendingSmall
+	st.pendingSmall = nil
+	st.mu.Unlock()
+
+	jobs <- blobJob{blobID: blobID, data: cur.buf, tracks: distinct}
+
+	// All buffered small files are now in a sealed blob → planned.
+	st.mu.Lock()
+	var ready []*track
+	for _, t := range pending {
+		t.planned = true
+		if t.remaining == 0 && !t.failed {
+			ready = append(ready, t)
+		}
+	}
+	st.mu.Unlock()
+	for _, t := range ready {
+		p.finalize(ctx, t)
+	}
+}
+
+// uploadWorker uploads blobs and, once a blob is stored, decrements its tracks
+// and finalizes any node whose blobs have all landed.
+func (p *Packer) uploadWorker(ctx context.Context, jobs <-chan blobJob, st *packState) {
+	for job := range jobs {
+		channel, err := p.channels.PickForUpload(ctx)
+		if err != nil {
+			p.failJob(ctx, job, st, fmt.Errorf("pick channel: %w", err))
+			continue
+		}
+		res, bot, err := p.upload(ctx, channel, job.data)
+		if err != nil {
+			p.failJob(ctx, job, st, err)
+			continue
+		}
+		if err := p.persistBlob(ctx, job, channel, bot, res); err != nil {
+			p.failJob(ctx, job, st, fmt.Errorf("persist blob: %w", err))
+			continue
+		}
+		p.stats.AddWriteBytes(int64(len(job.data)))
+
+		st.mu.Lock()
+		var ready []*track
+		for _, t := range job.tracks {
+			t.remaining--
+			if t.planned && t.remaining == 0 && !t.failed {
+				ready = append(ready, t)
+			}
+		}
+		st.mu.Unlock()
+		for _, t := range ready {
+			p.finalize(ctx, t)
+		}
+	}
+}
+
+// persistBlob records the uploaded blob (refcount 0; extents are written at node
+// finalization) and its per-bot file_id, incrementing the channel counter.
+func (p *Packer) persistBlob(ctx context.Context, job blobJob, channel *domain.Channel, bot *domain.Bot, res domain.TGSendResult) error {
+	now := time.Now()
+	return p.tx.WithTx(ctx, func(ctx context.Context, r *domain.Repositories) error {
+		seq, err := r.Channels.IncrementCounter(ctx, channel.ID, 1)
+		if err != nil {
+			return err
+		}
+		if err := r.Blobs.Create(ctx, &domain.Blob{
+			ID: job.blobID, ChannelID: channel.ID, MessageID: res.MessageID,
+			MessageSeq: seq, Size: int64(len(job.data)), State: domain.BlobStored,
+			Refcount: 0, CreatedAt: now, SealedAt: &now,
+		}); err != nil {
+			return err
+		}
+		return r.BlobBotFiles.Upsert(ctx, &domain.BlobBotFile{
+			BlobID: job.blobID, BotID: bot.ID, FileID: res.FileID,
+			FileUniqueID: res.FileUniqueID, FetchedAt: now,
+		})
+	})
+}
+
+// finalize atomically marks a node stored (iff this worker still owns the
+// lease), writes all its extents, bumps each blob's refcount and deletes its WAL
+// rows. Lost-lease/already-finalized nodes are skipped, so a re-pack can never
+// produce duplicate extents.
+func (p *Packer) finalize(ctx context.Context, t *track) {
+	st := t // alias for clarity
+	err := p.tx.WithTx(ctx, func(ctx context.Context, r *domain.Repositories) error {
+		owned, err := r.Nodes.MarkStoredIfOwner(ctx, st.node.ID, p.leaseOwner)
+		if err != nil {
+			return err
+		}
+		if !owned {
+			return nil
+		}
+		if len(st.extents) > 0 {
+			if err := r.Extents.CreateBatch(ctx, st.extents); err != nil {
+				return err
+			}
+			for _, e := range st.extents {
+				if err := r.Blobs.AddRefcount(ctx, e.BlobID, 1); err != nil {
+					return err
+				}
+			}
+		}
+		return r.WAL.DeleteByNode(ctx, st.node.ID)
+	})
+	if err != nil {
+		p.log.Warn("finalize node", "node", t.node.ID, "err", err)
+		// Leave it buffered with its lease; it will be re-packed.
+	}
+}
+
+// finalizeEmpty stores a zero-length node immediately (no blob involved).
 func (p *Packer) finalizeEmpty(ctx context.Context, node domain.Node) error {
 	return p.tx.WithTx(ctx, func(ctx context.Context, r *domain.Repositories) error {
 		owned, err := r.Nodes.MarkStoredIfOwner(ctx, node.ID, p.leaseOwner)
@@ -243,79 +451,29 @@ func (p *Packer) finalizeEmpty(ctx context.Context, node domain.Node) error {
 	})
 }
 
-// flush uploads cur's bytes as one blob, records the blob (with refcount 0 —
-// its extents are written later at node finalization), buffers the per-node
-// extents in memory, then finalizes every fully-flushed pending node.
-func (p *Packer) flush(ctx context.Context, cur *run, pending []domain.Node) error {
-	if len(cur.buf) == 0 {
-		return p.finalizePending(ctx, pending)
+// failTrack marks a single track failed and releases its node's lease so it is
+// re-packed; already-uploaded blobs for it become refcount-0 orphans.
+func (p *Packer) failTrack(ctx context.Context, t *track, st *packState) {
+	st.mu.Lock()
+	already := t.failed
+	t.failed = true
+	st.mu.Unlock()
+	if !already {
+		_ = p.repos.Nodes.ReleaseLease(ctx, t.node.ID)
 	}
-
-	channel, err := p.channels.PickForUpload(ctx)
-	if err != nil {
-		return fmt.Errorf("pick channel: %w", err)
-	}
-
-	res, bot, err := p.upload(ctx, channel, cur.buf)
-	if err != nil {
-		return err
-	}
-
-	blobID := uuid.New()
-	now := time.Now()
-	err = p.tx.WithTx(ctx, func(ctx context.Context, r *domain.Repositories) error {
-		seq, err := r.Channels.IncrementCounter(ctx, channel.ID, 1)
-		if err != nil {
-			return fmt.Errorf("increment counter: %w", err)
-		}
-		blob := &domain.Blob{
-			ID:         blobID,
-			ChannelID:  channel.ID,
-			MessageID:  res.MessageID,
-			MessageSeq: seq,
-			Size:       int64(len(cur.buf)),
-			State:      domain.BlobStored,
-			Refcount:   0, // bumped when each referencing node is finalized
-			CreatedAt:  now,
-			SealedAt:   &now,
-		}
-		if err := r.Blobs.Create(ctx, blob); err != nil {
-			return err
-		}
-		return r.BlobBotFiles.Upsert(ctx, &domain.BlobBotFile{
-			BlobID:       blobID,
-			BotID:        bot.ID,
-			FileID:       res.FileID,
-			FileUniqueID: res.FileUniqueID,
-			FetchedAt:    now,
-		})
-	})
-	if err != nil {
-		return fmt.Errorf("persist blob: %w", err)
-	}
-
-	// Buffer this blob's segments as pending extents on their nodes.
-	for _, s := range cur.segs {
-		p.nodeExtents[s.nodeID] = append(p.nodeExtents[s.nodeID], domain.Extent{
-			ID:         uuid.New(),
-			NodeID:     s.nodeID,
-			Seq:        s.seq,
-			FileOffset: s.fileOffset,
-			Length:     s.length,
-			BlobID:     blobID,
-			BlobOffset: s.blobOffset,
-		})
-	}
-
-	p.stats.AddWriteBytes(int64(len(cur.buf)))
-	p.log.Debug("flushed blob", "blob", blobID, "channel", channel.ID, "bot", bot.ID,
-		"bytes", len(cur.buf), "segments", len(cur.segs))
-
-	// Every pending node is now entirely in committed blobs → finalize them.
-	return p.finalizePending(ctx, pending)
 }
 
-// upload sends the bytes, rotating bots on rate-limit/forbidden errors.
+// failJob fails every track in a job (upload/persist error) and releases their
+// leases for re-packing.
+func (p *Packer) failJob(ctx context.Context, job blobJob, st *packState, cause error) {
+	p.log.Warn("blob upload failed", "blob", job.blobID, "err", cause)
+	for _, t := range job.tracks {
+		p.failTrack(ctx, t, st)
+	}
+}
+
+// upload sends the bytes, rotating bots on rate-limit/forbidden errors. Distinct
+// concurrent calls pick distinct bots (round-robin), so uploads run in parallel.
 func (p *Packer) upload(ctx context.Context, channel *domain.Channel, data []byte) (domain.TGSendResult, *domain.Bot, error) {
 	filename := uuid.NewString() + ".bin"
 	var lastErr error
@@ -346,68 +504,4 @@ func (p *Packer) upload(ctx context.Context, channel *domain.Channel, data []byt
 		}
 	}
 	return domain.TGSendResult{}, nil, fmt.Errorf("upload failed after retries: %w", lastErr)
-}
-
-// finalizePending atomically finalizes each fully-flushed node: in one
-// transaction it transitions the node buffered→stored ONLY if this worker still
-// owns the lease (MarkStoredIfOwner), then writes the node's accumulated extents
-// (bumping each blob's refcount) and deletes its WAL rows. If the lease was lost
-// or the node was already finalized, the buffered extents are discarded without
-// being written, so a lost-lease re-pack can never produce duplicate extents and
-// a partially-packed node never leaves committed extents behind.
-func (p *Packer) finalizePending(ctx context.Context, pending []domain.Node) error {
-	for i := range pending {
-		nodeID := pending[i].ID
-		extents := p.nodeExtents[nodeID]
-		err := p.tx.WithTx(ctx, func(ctx context.Context, r *domain.Repositories) error {
-			owned, err := r.Nodes.MarkStoredIfOwner(ctx, nodeID, p.leaseOwner)
-			if err != nil {
-				return err
-			}
-			if !owned {
-				return nil // lease lost or already finalized → discard extents
-			}
-			if len(extents) > 0 {
-				if err := r.Extents.CreateBatch(ctx, extents); err != nil {
-					return err
-				}
-				for _, e := range extents {
-					if err := r.Blobs.AddRefcount(ctx, e.BlobID, 1); err != nil {
-						return err
-					}
-				}
-			}
-			return r.WAL.DeleteByNode(ctx, nodeID)
-		})
-		if err != nil {
-			return err
-		}
-		delete(p.nodeExtents, nodeID)
-	}
-	return nil
-}
-
-// releaseLeases clears packer leases for every node referenced by a failed run
-// so they are re-claimed promptly instead of waiting for lease expiry.
-func (p *Packer) releaseLeases(ctx context.Context, cur *run, pending []domain.Node) {
-	seen := map[uuid.UUID]struct{}{}
-	release := func(id uuid.UUID) {
-		if _, ok := seen[id]; ok {
-			return
-		}
-		seen[id] = struct{}{}
-		// Discard buffered extents for the abandoned node; it will be re-packed
-		// from scratch. The blobs already uploaded for it become orphans
-		// (refcount 0) and are reclaimed by the GC after the grace period.
-		delete(p.nodeExtents, id)
-		_ = p.repos.Nodes.ReleaseLease(ctx, id)
-	}
-	for i := range pending {
-		release(pending[i].ID)
-	}
-	if cur != nil {
-		for _, s := range cur.segs {
-			release(s.nodeID)
-		}
-	}
 }

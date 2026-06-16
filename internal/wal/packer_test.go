@@ -136,6 +136,25 @@ func (f *fakeWAL) DeleteByNode(_ context.Context, nodeID uuid.UUID) error {
 	return nil
 }
 
+func (f *fakeWAL) ReadRange(_ context.Context, nodeID uuid.UUID, offset, length int64) ([]byte, error) {
+	f.s.mu.Lock()
+	defer f.s.mu.Unlock()
+	var all []byte
+	for _, c := range f.s.wal[nodeID] {
+		all = append(all, c.Data...)
+	}
+	if offset >= int64(len(all)) {
+		return nil, nil
+	}
+	end := offset + length
+	if end > int64(len(all)) {
+		end = int64(len(all))
+	}
+	out := make([]byte, end-offset)
+	copy(out, all[offset:end])
+	return out, nil
+}
+
 type fakeBlobs struct {
 	domain.BlobRepository
 	s *store
@@ -207,14 +226,27 @@ type fakeTG struct {
 	s              *store
 	mu             sync.Mutex
 	calls          int
-	failLo, failHi int // 1-based inclusive call range that returns an error
+	failLo, failHi int           // 1-based inclusive call range that returns an error
+	delay          time.Duration // simulated upload duration (to expose concurrency)
+	conc, maxConc  int           // current / observed-max concurrent SendDocument calls
 }
 
 func (f *fakeTG) SendDocument(_ context.Context, _ *domain.Bot, _ int64, _ string, data []byte) (domain.TGSendResult, error) {
 	f.mu.Lock()
 	f.calls++
 	n := f.calls
+	f.conc++
+	if f.conc > f.maxConc {
+		f.maxConc = f.conc
+	}
 	f.mu.Unlock()
+	if f.delay > 0 {
+		time.Sleep(f.delay)
+	}
+	f.mu.Lock()
+	f.conc--
+	f.mu.Unlock()
+
 	if f.failLo != 0 && n >= f.failLo && n <= f.failHi {
 		return domain.TGSendResult{}, fmt.Errorf("simulated upload failure on call %d", n)
 	}
@@ -222,6 +254,12 @@ func (f *fakeTG) SendDocument(_ context.Context, _ *domain.Bot, _ int64, _ strin
 	defer f.s.mu.Unlock()
 	f.s.msgID++
 	return domain.TGSendResult{MessageID: f.s.msgID, FileID: "file", FileUniqueID: "uniq"}, nil
+}
+
+func (f *fakeTG) maxConcurrency() int {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	return f.maxConc
 }
 func (f *fakeTG) GetMe(context.Context, *domain.Bot) (string, error) { return "", nil }
 func (f *fakeTG) GetChat(context.Context, *domain.Bot, int64) (string, bool, error) {
@@ -455,18 +493,76 @@ func TestPackerRepackAfterPartialFailureNoDuplicateExtents(t *testing.T) {
 			t.Errorf("extent %d offset %d, want %d", i, e.FileOffset, wantOff[i])
 		}
 	}
-	// Each good blob referenced exactly once; the orphan blob from the aborted
-	// run has refcount 0 (GC-collectable).
-	orphans := 0
+	// The 3 good blobs are referenced exactly once each; the pieces uploaded by
+	// the aborted run before it failed are refcount-0 orphans (GC-collectable).
+	orphans, good := 0, 0
 	for _, b := range s.blobs {
-		if b.Refcount == 0 {
+		switch {
+		case b.Refcount == 0:
 			orphans++
-		} else if b.Refcount != 1 {
-			t.Errorf("blob %s refcount %d, want 1", b.ID, b.Refcount)
+		case b.Refcount == 1:
+			good++
+		default:
+			t.Errorf("blob %s refcount %d, want 0 (orphan) or 1 (referenced)", b.ID, b.Refcount)
 		}
 	}
-	if orphans != 1 {
-		t.Errorf("got %d orphan blobs, want exactly 1 (from the aborted run)", orphans)
+	if good != 3 {
+		t.Errorf("got %d referenced blobs, want 3 (the re-packed file)", good)
+	}
+	if orphans < 1 {
+		t.Errorf("got %d orphan blobs, want >=1 (from the aborted run)", orphans)
+	}
+}
+
+// TestPackerUploadsBlobsInParallel verifies that a large file's blobs upload
+// concurrently across the worker pool rather than one at a time.
+func TestPackerUploadsBlobsInParallel(t *testing.T) {
+	s := newStore()
+	// 10 blobs worth (blobMax 1000) in a single large file.
+	chunks := make([][]byte, 10)
+	for i := range chunks {
+		chunks[i] = make([]byte, 1000)
+	}
+	id := s.addBuffered(10000, chunks...)
+
+	tg := &fakeTG{s: s, delay: 30 * time.Millisecond}
+	p, _ := newPackerTG(s, 1000, tg)
+	p.uploadConcurrency = 5 // 5 parallel upload workers
+	runUntilBlobs(t, p, s, 10)
+
+	if mc := tg.maxConcurrency(); mc < 2 {
+		t.Errorf("max concurrent uploads = %d, want >= 2 (uploads ran sequentially)", mc)
+	} else {
+		t.Logf("observed max concurrent uploads = %d", mc)
+	}
+
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	if s.nodes[id].State != domain.NodeStored {
+		t.Fatalf("node not stored")
+	}
+	if len(s.blobs) != 10 {
+		t.Errorf("blobs = %d, want 10", len(s.blobs))
+	}
+	var nodeExt []domain.Extent
+	for _, e := range s.extents {
+		if e.NodeID == id {
+			nodeExt = append(nodeExt, e)
+		}
+	}
+	if len(nodeExt) != 10 {
+		t.Fatalf("extents = %d, want 10", len(nodeExt))
+	}
+	sort.Slice(nodeExt, func(i, j int) bool { return nodeExt[i].FileOffset < nodeExt[j].FileOffset })
+	for i, e := range nodeExt {
+		if e.FileOffset != int64(i*1000) || e.Length != 1000 {
+			t.Errorf("extent %d = off %d len %d, want off %d len 1000", i, e.FileOffset, e.Length, i*1000)
+		}
+	}
+	for _, b := range s.blobs {
+		if b.Refcount != 1 {
+			t.Errorf("blob %s refcount %d, want 1", b.ID, b.Refcount)
+		}
 	}
 }
 
