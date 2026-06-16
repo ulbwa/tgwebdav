@@ -138,10 +138,12 @@ WebDAV GET ──► node ──► stored?  yes ─► extents ─► [disk cac
 - **Write**: `PUT` creates/replaces a node and appends content to `wal_chunks`
   (≤1 MiB rows). On `Close` the size/hash/etag are recorded and the node becomes
   `buffered` — already readable. A background packer leases buffered nodes
-  (`FOR UPDATE SKIP LOCKED`), concatenates them into a ≤19 MiB blob (flushing on
-  size or after an idle timeout), uploads via `sendDocument`, records the blob +
-  extents and marks the node `stored`, then deletes the WAL rows — all
-  transactionally, so a crash mid-upload just re-packs later.
+  (`FOR UPDATE SKIP LOCKED`), splits large files into ≤19 MiB blobs and packs
+  small files together, and uploads those blobs **in parallel across all
+  available bots** (one upload worker per bot). A node is marked `stored` and its
+  WAL rows deleted only once every one of its blobs has landed — extents are
+  written and refcounts bumped in that final, lease-guarded transaction, so a
+  crash or lost lease just re-packs from the WAL with no duplicate extents.
 - **Read**: stored files are assembled from their extents; each needed blob is
   served from the disk cache or downloaded from Telegram (preferring a bot with
   a cached `file_id`, else recovering a fresh one via `forwardMessage`). A
@@ -173,13 +175,15 @@ figures depend entirely on the Bot API and your network.
 |------|-----------:|
 | Write ingest into WAL (`PUT` 50 MiB) | ~87 MiB/s |
 | Read from warm disk cache | ~230 MiB/s |
-| Upload to Telegram (packer, 50 MiB → 3 blobs) | ~0.9 MiB/s |
-| Cold read from Telegram (50 MiB → 3 blobs) | ~0.8 MiB/s |
+| Upload to Telegram (packer, 200 MiB, 4 bots in parallel) | ~9.8 MiB/s |
+| Cold read from Telegram (sequential blob fetch) | ~0.8 MiB/s |
 
-A 50 MiB file is split into 3 blobs (19 + 19 + 12 MiB), and round-trips through
-real Telegram with a verified byte-for-byte SHA-256 match. Local operations are
-fast because writes hit Postgres, not Telegram; the Telegram-bound figures
-reflect the Bot API's own upload/download limits.
+A large file is split into 19 MiB blobs uploaded concurrently across all bots
+(≈ one bot's rate × bot count) and round-trips through real Telegram with a
+verified byte-for-byte SHA-256 match. Local operations are fast because writes
+hit Postgres, not Telegram; the Telegram-bound figures reflect the Bot API's own
+per-bot upload/download limits, which the parallel packer multiplies by spreading
+work across bots.
 
 > Note: per-request HTTP Basic auth runs argon2id, which is deliberately slow; a
 > short-lived in-memory verification cache (30 s, keyed by the stored hash) keeps
@@ -208,7 +212,7 @@ internal/storage/postgres/ GORM repositories + transactional unit-of-work
 internal/telegram/         Bot API client (per-bot pacing, typed errors)
 internal/cache/            disk LRU blob cache
 internal/blob/             read path: bot selection, recovery, cascade
-internal/wal/              packer worker (deferred/lease-guarded finalize)
+internal/wal/              packer (parallel multi-bot uploads, lease-guarded finalize)
 internal/webdavfs/         webdav.FileSystem over the store
 internal/auth/             argon2id, basic/bearer, impersonation
 internal/limits/           per-user quota / bandwidth / rate limiting
