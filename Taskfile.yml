@@ -6,8 +6,7 @@ tasks:
     cmds:
       - go generate ./...
       - go run github.com/sqlc-dev/sqlc/cmd/sqlc@latest generate -f db/sqlc.yaml
-      # NOTE: oapi paths move to api/openapi/ in a later phase
-      - go run github.com/oapi-codegen/oapi-codegen/v2/cmd/oapi-codegen@v2.4.1 -config internal/management/oapi.yaml api/openapi.yaml
+      - go run github.com/oapi-codegen/oapi-codegen/v2/cmd/oapi-codegen@v2.4.1 -config api/openapi/config.yaml api/openapi/management.yaml
 
   test:
     desc: Run all tests with race detector
@@ -54,4 +53,4 @@ tasks:
         done
 
         dbmate --no-dump-schema up
-        pg_dump --schema-only --no-owner --no-acl "$DATABASE_URL" > db/schema.sql
+        docker exec "$CONTAINER" pg_dump --schema-only --no-owner --no-acl -U postgres postgres > db/schema.sql
