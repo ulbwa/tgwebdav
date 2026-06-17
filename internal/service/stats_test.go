@@ -227,10 +227,7 @@ func TestStatsStartFlushesPeriodicallyAndOnExit(t *testing.T) {
 
 	r.IncReadOps()
 	deadline := time.After(2 * time.Second)
-	for {
-		if countCalls(store.snapshot(), model.MetricReadOps, "") >= 1 {
-			break
-		}
+	for countCalls(store.snapshot(), model.MetricReadOps, "") < 1 {
 		select {
 		case <-deadline:
 			t.Fatal("timed out waiting for a periodic flush")

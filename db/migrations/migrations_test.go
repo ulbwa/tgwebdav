@@ -30,7 +30,7 @@ func TestRun(t *testing.T) {
 	if err != nil {
 		t.Fatalf("open: %v", err)
 	}
-	defer db.Close()
+	defer func() { _ = db.Close() }()
 
 	for _, table := range []string{
 		"users", "api_tokens", "bots", "channels", "bot_channel", "blobs",

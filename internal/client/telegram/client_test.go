@@ -65,7 +65,7 @@ func TestSendDocumentSuccess(t *testing.T) {
 			}
 		}
 		w.Header().Set("Content-Type", "application/json")
-		io.WriteString(w, `{"ok":true,"result":{"message_id":4242,"document":{"file_id":"FID","file_unique_id":"FUID"}}}`)
+		_, _ = io.WriteString(w, `{"ok":true,"result":{"message_id":4242,"document":{"file_id":"FID","file_unique_id":"FUID"}}}`)
 	}))
 	defer srv.Close()
 
@@ -95,7 +95,7 @@ func TestSendDocumentRateLimited(t *testing.T) {
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		w.Header().Set("Content-Type", "application/json")
 		w.WriteHeader(http.StatusTooManyRequests)
-		io.WriteString(w, `{"ok":false,"error_code":429,"description":"Too Many Requests: retry after 17","parameters":{"retry_after":17}}`)
+		_, _ = io.WriteString(w, `{"ok":false,"error_code":429,"description":"Too Many Requests: retry after 17","parameters":{"retry_after":17}}`)
 	}))
 	defer srv.Close()
 
@@ -119,7 +119,7 @@ func TestDownloadFileNotFound(t *testing.T) {
 			t.Errorf("expected getFile call, got %q", r.URL.Path)
 		}
 		w.Header().Set("Content-Type", "application/json")
-		io.WriteString(w, `{"ok":false,"error_code":400,"description":"Bad Request: file not found"}`)
+		_, _ = io.WriteString(w, `{"ok":false,"error_code":400,"description":"Bad Request: file not found"}`)
 	}))
 	defer srv.Close()
 
@@ -133,7 +133,7 @@ func TestDownloadFileNotFound(t *testing.T) {
 func TestGetChatMember(t *testing.T) {
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		w.Header().Set("Content-Type", "application/json")
-		io.WriteString(w, `{"ok":true,"result":{"id":-100999,"title":"Blob Store","type":"channel"}}`)
+		_, _ = io.WriteString(w, `{"ok":true,"result":{"id":-100999,"title":"Blob Store","type":"channel"}}`)
 	}))
 	defer srv.Close()
 
@@ -155,7 +155,7 @@ func TestGetChatNotMember(t *testing.T) {
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		w.Header().Set("Content-Type", "application/json")
 		w.WriteHeader(http.StatusForbidden)
-		io.WriteString(w, `{"ok":false,"error_code":403,"description":"Forbidden: bot is not a member of the channel chat"}`)
+		_, _ = io.WriteString(w, `{"ok":false,"error_code":403,"description":"Forbidden: bot is not a member of the channel chat"}`)
 	}))
 	defer srv.Close()
 
@@ -176,7 +176,7 @@ func TestGetChatNotFound(t *testing.T) {
 	// not-found also collapses to (member=false, err=nil).
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		w.Header().Set("Content-Type", "application/json")
-		io.WriteString(w, `{"ok":false,"error_code":400,"description":"Bad Request: chat not found"}`)
+		_, _ = io.WriteString(w, `{"ok":false,"error_code":400,"description":"Bad Request: chat not found"}`)
 	}))
 	defer srv.Close()
 
@@ -193,7 +193,7 @@ func TestGetChatNotFound(t *testing.T) {
 func TestGetChatTransportError(t *testing.T) {
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		w.Header().Set("Content-Type", "application/json")
-		io.WriteString(w, `{"ok":false,"error_code":500,"description":"Internal Server Error"}`)
+		_, _ = io.WriteString(w, `{"ok":false,"error_code":500,"description":"Internal Server Error"}`)
 	}))
 	defer srv.Close()
 
@@ -224,13 +224,13 @@ func TestDownloadFileTwoStep(t *testing.T) {
 				t.Errorf("getFile file_id = %q", r.FormValue("file_id"))
 			}
 			w.Header().Set("Content-Type", "application/json")
-			io.WriteString(w, `{"ok":true,"result":{"file_id":"FID42","file_path":"`+wantPath+`"}}`)
+			_, _ = io.WriteString(w, `{"ok":true,"result":{"file_id":"FID42","file_path":"`+wantPath+`"}}`)
 		case strings.Contains(r.URL.Path, "/file/bot"):
 			sawDownload = true
 			if !strings.HasSuffix(r.URL.Path, wantPath) {
 				t.Errorf("download path = %q, want suffix %q", r.URL.Path, wantPath)
 			}
-			io.WriteString(w, wantBytes)
+			_, _ = io.WriteString(w, wantBytes)
 		default:
 			t.Errorf("unexpected path %q", r.URL.Path)
 		}
@@ -262,7 +262,7 @@ func TestForwardMessageRecoversFileID(t *testing.T) {
 			t.Errorf("message_id = %q, want 555", r.FormValue("message_id"))
 		}
 		w.Header().Set("Content-Type", "application/json")
-		io.WriteString(w, `{"ok":true,"result":{"message_id":777,"document":{"file_id":"FRESH","file_unique_id":"U"}}}`)
+		_, _ = io.WriteString(w, `{"ok":true,"result":{"message_id":777,"document":{"file_id":"FRESH","file_unique_id":"U"}}}`)
 	}))
 	defer srv.Close()
 
@@ -279,7 +279,7 @@ func TestForwardMessageRecoversFileID(t *testing.T) {
 func TestDeleteMessageAlreadyGoneIsNil(t *testing.T) {
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		w.Header().Set("Content-Type", "application/json")
-		io.WriteString(w, `{"ok":false,"error_code":400,"description":"Bad Request: message to delete not found"}`)
+		_, _ = io.WriteString(w, `{"ok":false,"error_code":400,"description":"Bad Request: message to delete not found"}`)
 	}))
 	defer srv.Close()
 
@@ -295,7 +295,7 @@ func TestGetMeSuccess(t *testing.T) {
 			t.Errorf("unexpected path %q", r.URL.Path)
 		}
 		w.Header().Set("Content-Type", "application/json")
-		io.WriteString(w, `{"ok":true,"result":{"id":1,"is_bot":true,"username":"my_blob_bot"}}`)
+		_, _ = io.WriteString(w, `{"ok":true,"result":{"id":1,"is_bot":true,"username":"my_blob_bot"}}`)
 	}))
 	defer srv.Close()
 
@@ -313,7 +313,7 @@ func TestForbiddenMapping(t *testing.T) {
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		w.Header().Set("Content-Type", "application/json")
 		w.WriteHeader(http.StatusForbidden)
-		io.WriteString(w, `{"ok":false,"error_code":403,"description":"Forbidden: bot was blocked"}`)
+		_, _ = io.WriteString(w, `{"ok":false,"error_code":403,"description":"Forbidden: bot was blocked"}`)
 	}))
 	defer srv.Close()
 
@@ -329,7 +329,7 @@ func TestPerBotPacing(t *testing.T) {
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		hits++
 		w.Header().Set("Content-Type", "application/json")
-		io.WriteString(w, `{"ok":true,"result":{"id":1,"is_bot":true,"username":"b"}}`)
+		_, _ = io.WriteString(w, `{"ok":true,"result":{"id":1,"is_bot":true,"username":"b"}}`)
 	}))
 	defer srv.Close()
 
@@ -355,7 +355,7 @@ func TestPerBotPacing(t *testing.T) {
 func TestPaceHonorsContextCancellation(t *testing.T) {
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		w.Header().Set("Content-Type", "application/json")
-		io.WriteString(w, `{"ok":true,"result":{"id":1,"is_bot":true,"username":"b"}}`)
+		_, _ = io.WriteString(w, `{"ok":true,"result":{"id":1,"is_bot":true,"username":"b"}}`)
 	}))
 	defer srv.Close()
 

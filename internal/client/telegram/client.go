@@ -188,7 +188,7 @@ func (c *Client) do(ctx context.Context, bot *model.Bot, req *http.Request) (jso
 	if err != nil {
 		return nil, fmt.Errorf("telegram: request failed: %w", redactToken(err, bot.Token))
 	}
-	defer resp.Body.Close()
+	defer func() { _ = resp.Body.Close() }()
 
 	body, err := io.ReadAll(resp.Body)
 	if err != nil {
@@ -461,7 +461,7 @@ func (c *Client) downloadPath(ctx context.Context, bot *model.Bot, filePath stri
 	if err != nil {
 		return nil, fmt.Errorf("telegram: download failed: %w", redactToken(err, bot.Token))
 	}
-	defer resp.Body.Close()
+	defer func() { _ = resp.Body.Close() }()
 
 	if resp.StatusCode == http.StatusNotFound {
 		return nil, fmt.Errorf("%w: file path %q", model.ErrTelegramNotFound, filePath)

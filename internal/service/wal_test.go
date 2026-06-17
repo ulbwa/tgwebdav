@@ -422,10 +422,10 @@ func TestPackerRepackAfterPartialFailureNoDuplicateExtents(t *testing.T) {
 	// the aborted run before it failed are refcount-0 orphans (GC-collectable).
 	orphans, good := 0, 0
 	for _, b := range s.blobs {
-		switch {
-		case b.Refcount == 0:
+		switch b.Refcount {
+		case 0:
 			orphans++
-		case b.Refcount == 1:
+		case 1:
 			good++
 		default:
 			t.Errorf("blob %s refcount %d, want 0 (orphan) or 1 (referenced)", b.ID, b.Refcount)
