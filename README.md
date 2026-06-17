@@ -139,16 +139,19 @@ WebDAV GET ──► node ──► stored?  yes ─► extents ─► [disk cac
   (≤1 MiB rows). On `Close` the size/hash/etag are recorded and the node becomes
   `buffered` — already readable. A background packer leases buffered nodes
   (`FOR UPDATE SKIP LOCKED`), splits large files into ≤19 MiB blobs and packs
-  small files together, and uploads those blobs **in parallel across all
-  available bots** (one upload worker per bot). A node is marked `stored` and its
-  WAL rows deleted only once every one of its blobs has landed — extents are
-  written and refcounts bumped in that final, lease-guarded transaction, so a
-  crash or lost lease just re-packs from the WAL with no duplicate extents.
+  small files together, and uploads those blobs **in parallel across the bots**
+  (one upload worker per bot). All of a file's blobs go to **one channel** (so
+  losing a channel loses whole files rather than corrupting many). A node is
+  marked `stored` and its WAL rows deleted only once every one of its blobs has
+  landed — extents are written and refcounts bumped in that final, lease-guarded
+  transaction, so a crash or lost lease just re-packs with no duplicate extents.
 - **Read**: stored files are assembled from their extents; each needed blob is
   served from the disk cache or downloaded from Telegram (preferring a bot with
-  a cached `file_id`, else recovering a fresh one via `forwardMessage`). A
-  definitively missing message marks the blob permanently unavailable and
-  cascade-deletes files that referenced only it.
+  a cached `file_id`, else recovering a fresh one via `forwardMessage`). A GET
+  runs a **sliding-window read-ahead** that downloads the blobs just ahead of the
+  read cursor in parallel (bounded to cache capacity), so sequential reads do not
+  stall on the next blob. A definitively missing message marks the blob
+  permanently unavailable and cascade-deletes files that referenced only it.
 - **Delete/Move/Copy**: DELETE removes nodes and decrements blob refcounts
   (messages are never auto-deleted — they may be shared); MOVE rewrites paths;
   COPY duplicates extents and bumps refcounts, sharing blobs without re-upload.
