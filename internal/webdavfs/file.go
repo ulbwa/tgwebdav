@@ -10,6 +10,8 @@ import (
 	"mime"
 	"os"
 	"path"
+	"sort"
+	"sync/atomic"
 	"time"
 
 	"github.com/google/uuid"
@@ -133,8 +135,9 @@ type readFile struct {
 	loaded  bool
 	bps     int64
 
-	pos int64
-	src io.Reader // throttled assembler positioned at pos; rebuilt after Seek
+	pos    int64
+	cursor atomic.Int64 // mirror of pos read by the read-ahead goroutine
+	src    io.Reader    // throttled assembler positioned at pos; rebuilt after Seek
 }
 
 // ensureExtents loads the node's extents on first read (stored nodes only) and,
@@ -151,25 +154,71 @@ func (r *readFile) ensureExtents() error {
 	r.extents = extents
 	r.loaded = true
 
-	if ids := distinctBlobIDs(extents); len(ids) > 1 {
-		go r.fs.blobs.Prefetch(r.ctx, ids)
+	if ids, starts := planBlobs(extents); len(ids) > 1 {
+		go r.readAhead(ids, starts)
 	}
 	return nil
 }
 
-// distinctBlobIDs returns the blob ids referenced by extents in read order,
-// each once.
-func distinctBlobIDs(extents []domain.Extent) []uuid.UUID {
-	seen := make(map[uuid.UUID]struct{}, len(extents))
-	ids := make([]uuid.UUID, 0, len(extents))
+// readAhead keeps the blobs just ahead of the read cursor downloading in
+// parallel (BlobReader.Prefetch, itself bounded to the cache capacity) so a
+// sequential GET never blocks waiting for the next blob. It slides forward as
+// the cursor advances and stops when the file is fully read or the request ends.
+func (r *readFile) readAhead(ids []uuid.UUID, starts []int64) {
+	for {
+		if r.ctx.Err() != nil {
+			return
+		}
+		cur := r.cursor.Load()
+		if cur >= r.node.Size {
+			return
+		}
+		i := blobIndexFor(starts, cur)
+		// Prefetch fetches up to cache-capacity blobs starting at the cursor.
+		r.fs.blobs.Prefetch(r.ctx, ids[i:])
+		select {
+		case <-r.ctx.Done():
+			return
+		case <-time.After(30 * time.Millisecond):
+		}
+	}
+}
+
+// planBlobs returns the distinct blob ids of a file in read order together with
+// each blob's starting byte offset within the file.
+func planBlobs(extents []domain.Extent) (ids []uuid.UUID, starts []int64) {
+	type be struct {
+		id    uuid.UUID
+		start int64
+	}
+	idx := make(map[uuid.UUID]int, len(extents))
+	var list []be
 	for _, e := range extents {
-		if _, ok := seen[e.BlobID]; ok {
+		if i, ok := idx[e.BlobID]; ok {
+			if e.FileOffset < list[i].start {
+				list[i].start = e.FileOffset
+			}
 			continue
 		}
-		seen[e.BlobID] = struct{}{}
-		ids = append(ids, e.BlobID)
+		idx[e.BlobID] = len(list)
+		list = append(list, be{id: e.BlobID, start: e.FileOffset})
 	}
-	return ids
+	sort.Slice(list, func(i, j int) bool { return list[i].start < list[j].start })
+	for _, b := range list {
+		ids = append(ids, b.id)
+		starts = append(starts, b.start)
+	}
+	return ids, starts
+}
+
+// blobIndexFor returns the index of the blob covering byte offset cur (the last
+// blob whose start is <= cur).
+func blobIndexFor(starts []int64, cur int64) int {
+	i := 0
+	for i+1 < len(starts) && starts[i+1] <= cur {
+		i++
+	}
+	return i
 }
 
 func (r *readFile) Close() error              { return nil }
@@ -195,6 +244,7 @@ func (r *readFile) Seek(offset int64, whence int) (int64, error) {
 		return 0, os.ErrInvalid
 	}
 	r.pos = abs
+	r.cursor.Store(abs)
 	r.src = nil // force rebuild at new position
 	return abs, nil
 }
@@ -213,6 +263,7 @@ func (r *readFile) Read(p []byte) (int, error) {
 	}
 	n, err := r.src.Read(p)
 	r.pos += int64(n)
+	r.cursor.Store(r.pos)
 	if n > 0 {
 		r.fs.stats.AddReadBytes(int64(n))
 	}
