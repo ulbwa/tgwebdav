@@ -2,6 +2,7 @@ package service
 
 import (
 	"context"
+	"errors"
 	"sync"
 	"testing"
 	"time"
@@ -16,10 +17,32 @@ type recordCall struct {
 	value  float64
 }
 
-// fakeStatWriter is an in-memory statWriter that records every Record call.
+// fakeStatWriter is an in-memory statWriter that records every Record call and
+// can serve canned Query/Latest results for the read-path tests.
 type fakeStatWriter struct {
 	mu    sync.Mutex
 	calls []recordCall
+
+	// Read-path fixtures and capture.
+	queryResult []model.StatSample
+	queryErr    error
+	queryCalls  []queryCall
+
+	latestResult *model.StatSample
+	latestErr    error
+	latestCalls  []labelCall
+}
+
+type queryCall struct {
+	metric string
+	label  string
+	from   time.Time
+	to     time.Time
+}
+
+type labelCall struct {
+	metric string
+	label  string
 }
 
 func (f *fakeStatWriter) Record(_ context.Context, metric, label string, value float64) error {
@@ -27,6 +50,26 @@ func (f *fakeStatWriter) Record(_ context.Context, metric, label string, value f
 	defer f.mu.Unlock()
 	f.calls = append(f.calls, recordCall{metric: metric, label: label, value: value})
 	return nil
+}
+
+func (f *fakeStatWriter) Query(_ context.Context, metric, label string, from, to time.Time) ([]model.StatSample, error) {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	f.queryCalls = append(f.queryCalls, queryCall{metric: metric, label: label, from: from, to: to})
+	if f.queryErr != nil {
+		return nil, f.queryErr
+	}
+	return f.queryResult, nil
+}
+
+func (f *fakeStatWriter) Latest(_ context.Context, metric, label string) (*model.StatSample, error) {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	f.latestCalls = append(f.latestCalls, labelCall{metric: metric, label: label})
+	if f.latestErr != nil {
+		return nil, f.latestErr
+	}
+	return f.latestResult, nil
 }
 
 var _ statWriter = (*fakeStatWriter)(nil)
@@ -207,5 +250,80 @@ func TestStatsStartFlushesPeriodicallyAndOnExit(t *testing.T) {
 	got := findCall(t, store.snapshot(), model.MetricWriteBytes, "")
 	if got.value != 42 {
 		t.Errorf("final-flush write_bytes: got %v, want 42", got.value)
+	}
+}
+
+func TestStatsQueryDelegatesRangeToRepo(t *testing.T) {
+	want := []model.StatSample{
+		{Metric: model.MetricReadBytes, Label: "primary", Value: 10},
+		{Metric: model.MetricReadBytes, Label: "primary", Value: 20},
+	}
+	store := &fakeStatWriter{queryResult: want}
+	r := NewStatRecorder(store, time.Hour, nil)
+
+	from := time.Date(2026, 1, 1, 0, 0, 0, 0, time.UTC)
+	to := time.Date(2026, 1, 2, 0, 0, 0, 0, time.UTC)
+
+	got, err := r.Query(context.Background(), model.MetricReadBytes, "primary", from, to)
+	if err != nil {
+		t.Fatalf("Query: unexpected error: %v", err)
+	}
+	if len(got) != len(want) {
+		t.Fatalf("Query: got %d samples, want %d", len(got), len(want))
+	}
+	for i := range want {
+		if got[i] != want[i] {
+			t.Errorf("Query sample %d: got %+v, want %+v", i, got[i], want[i])
+		}
+	}
+
+	if len(store.queryCalls) != 1 {
+		t.Fatalf("expected exactly one Query delegation, got %d", len(store.queryCalls))
+	}
+	qc := store.queryCalls[0]
+	if qc.metric != model.MetricReadBytes || qc.label != "primary" || !qc.from.Equal(from) || !qc.to.Equal(to) {
+		t.Errorf("Query delegated wrong args: %+v", qc)
+	}
+}
+
+func TestStatsQueryPropagatesError(t *testing.T) {
+	store := &fakeStatWriter{queryErr: errors.New("boom")}
+	r := NewStatRecorder(store, time.Hour, nil)
+
+	_, err := r.Query(context.Background(), model.MetricReadBytes, "", time.Time{}, time.Now())
+	if err == nil {
+		t.Fatal("Query: expected error, got nil")
+	}
+}
+
+func TestStatsLatestDelegatesToRepo(t *testing.T) {
+	want := &model.StatSample{Metric: model.MetricStorageBytes, Label: "primary", Value: 4096}
+	store := &fakeStatWriter{latestResult: want}
+	r := NewStatRecorder(store, time.Hour, nil)
+
+	got, err := r.Latest(context.Background(), model.MetricStorageBytes, "primary")
+	if err != nil {
+		t.Fatalf("Latest: unexpected error: %v", err)
+	}
+	if got == nil || *got != *want {
+		t.Fatalf("Latest: got %+v, want %+v", got, want)
+	}
+
+	if len(store.latestCalls) != 1 {
+		t.Fatalf("expected exactly one Latest delegation, got %d", len(store.latestCalls))
+	}
+	lc := store.latestCalls[0]
+	if lc.metric != model.MetricStorageBytes || lc.label != "primary" {
+		t.Errorf("Latest delegated wrong args: %+v", lc)
+	}
+}
+
+func TestStatsLatestPropagatesNotFound(t *testing.T) {
+	store := &fakeStatWriter{latestErr: model.ErrNotFound}
+	r := NewStatRecorder(store, time.Hour, nil)
+
+	_, err := r.Latest(context.Background(), model.MetricStorageBytes, "missing")
+	if !errors.Is(err, model.ErrNotFound) {
+		t.Fatalf("Latest: expected ErrNotFound, got %v", err)
 	}
 }

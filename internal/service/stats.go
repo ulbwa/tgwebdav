@@ -2,6 +2,7 @@ package service
 
 import (
 	"context"
+	"fmt"
 	"log/slog"
 	"sync"
 	"sync/atomic"
@@ -10,10 +11,14 @@ import (
 	"github.com/ulbwa/tgwebdav/internal/model"
 )
 
-// statWriter is the narrow repository interface StatRecorder needs.
-// The real *repository.StatRepository satisfies this structurally.
+// statWriter is the narrow repository interface StatRecorder needs. Besides
+// recording samples (the flush loop) it also reads them back for the Management
+// API's stats endpoints (Query/Latest). The real *repository.StatRepository
+// satisfies this structurally.
 type statWriter interface {
 	Record(ctx context.Context, metric, label string, value float64) error
+	Query(ctx context.Context, metric, label string, from, to time.Time) ([]model.StatSample, error)
+	Latest(ctx context.Context, metric, label string) (*model.StatSample, error)
 }
 
 // gauge pairs a metric/label with the function sampled on each flush.
@@ -152,4 +157,24 @@ func (r *StatRecorder) flush(ctx context.Context) {
 				"metric", g.metric, "label", g.label, "error", err)
 		}
 	}
+}
+
+// Query returns the persisted samples for metric/label within the closed
+// [from, to] window, oldest-first, by delegating to the stat repository.
+func (r *StatRecorder) Query(ctx context.Context, metric, label string, from, to time.Time) ([]model.StatSample, error) {
+	samples, err := r.store.Query(ctx, metric, label, from, to)
+	if err != nil {
+		return nil, fmt.Errorf("query stats %q/%q: %w", metric, label, err)
+	}
+	return samples, nil
+}
+
+// Latest returns the most recent persisted sample for metric/label, or
+// model.ErrNotFound when none exists, by delegating to the stat repository.
+func (r *StatRecorder) Latest(ctx context.Context, metric, label string) (*model.StatSample, error) {
+	sample, err := r.store.Latest(ctx, metric, label)
+	if err != nil {
+		return nil, fmt.Errorf("latest stat %q/%q: %w", metric, label, err)
+	}
+	return sample, nil
 }
