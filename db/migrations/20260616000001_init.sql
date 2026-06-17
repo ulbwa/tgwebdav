@@ -56,7 +56,7 @@ CREATE TABLE blobs (
     message_id  bigint NOT NULL,
     message_seq bigint NOT NULL DEFAULT 0,
     size        bigint NOT NULL DEFAULT 0,
-    state       text NOT NULL,
+    state       integer NOT NULL,
     refcount    bigint NOT NULL DEFAULT 0,
     created_at  timestamptz NOT NULL DEFAULT now(),
     sealed_at   timestamptz
@@ -86,7 +86,7 @@ CREATE TABLE nodes (
     content_hash       text NOT NULL DEFAULT '',
     etag               text NOT NULL DEFAULT '',
     content_type       text NOT NULL DEFAULT '',
-    state              text NOT NULL DEFAULT 'stored',
+    state              integer NOT NULL DEFAULT 2,
     packer_lease_owner text NOT NULL DEFAULT '',
     packer_lease_until timestamptz,
     created_at         timestamptz NOT NULL DEFAULT now(),
@@ -95,7 +95,7 @@ CREATE TABLE nodes (
 );
 CREATE INDEX idx_nodes_user_parent ON nodes(user_id, parent_id);
 CREATE INDEX idx_nodes_user ON nodes(user_id);
-CREATE INDEX idx_nodes_pack ON nodes(packer_lease_until) WHERE state = 'buffered';
+CREATE INDEX idx_nodes_pack ON nodes(packer_lease_until) WHERE state = 1;
 
 CREATE TABLE extents (
     id          uuid PRIMARY KEY,
