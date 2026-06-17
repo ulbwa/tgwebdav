@@ -145,6 +145,77 @@ func TestWithTx_RollbackOnError(t *testing.T) {
 	}
 }
 
+func TestWithTx_NestedReusesOuterTx(t *testing.T) {
+	pool := newTestPool(t)
+	ctx := context.Background()
+	m := NewTxManager(pool)
+
+	if _, err := pool.Exec(ctx, "CREATE TABLE t_nested (id int PRIMARY KEY)"); err != nil {
+		t.Fatalf("create table: %v", err)
+	}
+
+	// The inner WithTx must join the outer transaction rather than open a second
+	// one: the executor resolved inside the nested closure is the very same
+	// pgx.Tx the outer closure sees.
+	var innerRan bool
+	err := m.WithTx(ctx, func(outerCtx context.Context) error {
+		outerExec := FromContext(outerCtx, pool)
+		if outerExec == DBTX(pool) {
+			t.Fatal("outer FromContext returned pool; want tx")
+		}
+		return m.WithTx(outerCtx, func(innerCtx context.Context) error {
+			innerRan = true
+			innerExec := FromContext(innerCtx, pool)
+			if innerExec != outerExec {
+				t.Fatal("nested WithTx began a new tx; want it to reuse the outer tx")
+			}
+			return nil
+		})
+	})
+	if err != nil {
+		t.Fatalf("WithTx: %v", err)
+	}
+	if !innerRan {
+		t.Fatal("inner closure did not run")
+	}
+}
+
+func TestWithTx_NestedErrorRollsBackOuter(t *testing.T) {
+	pool := newTestPool(t)
+	ctx := context.Background()
+	m := NewTxManager(pool)
+
+	if _, err := pool.Exec(ctx, "CREATE TABLE t_nested_rollback (id int PRIMARY KEY)"); err != nil {
+		t.Fatalf("create table: %v", err)
+	}
+
+	// An error returned from the INNER closure propagates out of the nested
+	// WithTx (which only ran fn, owning nothing) up to the OUTER WithTx, which
+	// owns the transaction and rolls it back. A row written in the outer closure
+	// before the nested call must therefore NOT be persisted.
+	sentinel := errors.New("inner boom")
+	err := m.WithTx(ctx, func(outerCtx context.Context) error {
+		exec := FromContext(outerCtx, pool)
+		if _, err := exec.Exec(outerCtx, "INSERT INTO t_nested_rollback (id) VALUES (1)"); err != nil {
+			return err
+		}
+		return m.WithTx(outerCtx, func(innerCtx context.Context) error {
+			return sentinel
+		})
+	})
+	if !errors.Is(err, sentinel) {
+		t.Fatalf("WithTx error = %v, want sentinel", err)
+	}
+
+	var n int
+	if err := pool.QueryRow(ctx, "SELECT count(*) FROM t_nested_rollback").Scan(&n); err != nil {
+		t.Fatalf("count after rollback: %v", err)
+	}
+	if n != 0 {
+		t.Fatalf("row count after nested-error rollback = %d, want 0", n)
+	}
+}
+
 func TestWithTx_RollbackOnPanic(t *testing.T) {
 	pool := newTestPool(t)
 	ctx := context.Background()

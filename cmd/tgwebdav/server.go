@@ -182,7 +182,16 @@ func runServer(rootCtx context.Context, cfg *config.Config) error {
 	})
 
 	mgmtServer := &http.Server{Addr: cfg.MgmtAddr, Handler: mgmtHandler}
-	davServer := &http.Server{Addr: cfg.WebDAVAddr, Handler: davHandler}
+	// Match the old WebDAV server's timeouts (internal/server/webdav.go): a read-
+	// header timeout to shed slow-loris connections and an idle timeout to reap
+	// kept-alive connections. No Read/Write timeout, so large uploads/downloads
+	// are not cut off mid-transfer.
+	davServer := &http.Server{
+		Addr:              cfg.WebDAVAddr,
+		Handler:           davHandler,
+		ReadHeaderTimeout: 30 * time.Second,
+		IdleTimeout:       120 * time.Second,
+	}
 
 	serveErr := make(chan error, 2)
 	go func() {

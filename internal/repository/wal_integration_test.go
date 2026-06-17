@@ -124,28 +124,62 @@ func TestWALRepository_ReadRange(t *testing.T) {
 	ctx := context.Background()
 	nodeID := insertNodeForWAL(t, pool)
 
-	// Three chunks: byte ranges [0,6) "ABCDEF", [6,10) "GHIJ", [10,13) "KLM".
-	chunks := [][]byte{[]byte("ABCDEF"), []byte("GHIJ"), []byte("KLM")}
+	// Production always writes fixed model.WALChunkSize chunks (only the final
+	// chunk is smaller), and ReadRange relies on that seq->offset invariant to
+	// fetch only the chunks a window touches. So the fixture mirrors it: three
+	// full 1 MiB chunks plus a smaller tail chunk. Each chunk is filled with a
+	// distinct byte so any boundary mistake shows up as wrong content.
+	sz := model.WALChunkSize
+	fill := func(b byte, n int64) []byte {
+		out := make([]byte, n)
+		for i := range out {
+			out[i] = b
+		}
+		return out
+	}
+	chunks := [][]byte{
+		fill('A', sz),   // seq 0: bytes [0, sz)
+		fill('B', sz),   // seq 1: bytes [sz, 2*sz)
+		fill('C', sz),   // seq 2: bytes [2*sz, 3*sz)
+		fill('D', sz/2), // seq 3: bytes [3*sz, 3*sz+sz/2)  (smaller final chunk)
+	}
 	for seq, data := range chunks {
 		if err := repo.AppendChunk(ctx, &model.WALChunk{NodeID: nodeID, Seq: int64(seq), Data: data}); err != nil {
 			t.Fatalf("append: %v", err)
 		}
 	}
-	full := []byte("ABCDEFGHIJKLM") // 13 bytes
+	var full []byte
+	for _, c := range chunks {
+		full = append(full, c...)
+	}
+	total := int64(len(full)) // 3*sz + sz/2
+
+	// expect returns full[offset:min(offset+length, total)] (clamped, empty when
+	// the range is degenerate), so each case's want is derived from the fixture.
+	expect := func(offset, length int64) []byte {
+		if length <= 0 || offset < 0 || offset >= total {
+			return []byte{}
+		}
+		end := offset + length
+		if end > total {
+			end = total
+		}
+		return full[offset:end]
+	}
 
 	tests := []struct {
 		name           string
 		offset, length int64
-		want           []byte
 	}{
-		{"whole file", 0, 13, full},
-		{"within first chunk", 1, 3, []byte("BCD")},
-		{"spanning two chunks", 4, 4, []byte("EFGH")}, // crosses chunk0/chunk1 boundary
-		{"spanning three chunks", 5, 7, []byte("FGHIJKL")},
-		{"tail past end clamps", 11, 100, []byte("LM")},
-		{"exactly at boundary", 6, 4, []byte("GHIJ")},
-		{"zero length", 5, 0, []byte{}},
-		{"offset beyond end", 50, 5, []byte{}},
+		{"whole file", 0, total},
+		{"within first chunk", 1, 3},
+		{"spanning two chunks", sz - 2, 4},          // crosses seq0/seq1 boundary
+		{"spanning three chunks", sz - 1, 2*sz + 2}, // seq0 -> seq2
+		{"middle window", sz + 100, 200},            // entirely inside seq1
+		{"tail past end clamps", total - 2, 100},    // reads last 2 bytes of seq3
+		{"exactly at boundary", sz, sz},             // exactly all of seq1
+		{"zero length", 5, 0},
+		{"offset beyond end", total + 100, 5},
 	}
 	for _, tc := range tests {
 		t.Run(tc.name, func(t *testing.T) {
@@ -153,8 +187,9 @@ func TestWALRepository_ReadRange(t *testing.T) {
 			if err != nil {
 				t.Fatalf("read range: %v", err)
 			}
-			if !bytes.Equal(got, tc.want) {
-				t.Fatalf("ReadRange(%d,%d) = %q, want %q", tc.offset, tc.length, got, tc.want)
+			want := expect(tc.offset, tc.length)
+			if !bytes.Equal(got, want) {
+				t.Fatalf("ReadRange(%d,%d) len = %d, want %d", tc.offset, tc.length, len(got), len(want))
 			}
 		})
 	}

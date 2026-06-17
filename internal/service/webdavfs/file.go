@@ -385,8 +385,6 @@ type writeFile struct {
 	closed bool
 }
 
-const walChunkSize = 1 << 20 // 1 MiB
-
 func (w *writeFile) Read([]byte) (int, error) { return 0, os.ErrPermission }
 func (w *writeFile) Seek(int64, int) (int64, error) {
 	return 0, os.ErrInvalid
@@ -402,11 +400,11 @@ func (w *writeFile) Write(p []byte) (int, error) {
 	w.hasher.Write(p)
 	w.size += int64(len(p))
 	w.buf = append(w.buf, p...)
-	for len(w.buf) >= walChunkSize {
-		if err := w.flushChunk(w.buf[:walChunkSize]); err != nil {
+	for int64(len(w.buf)) >= model.WALChunkSize {
+		if err := w.flushChunk(w.buf[:model.WALChunkSize]); err != nil {
 			return 0, err
 		}
-		w.buf = w.buf[walChunkSize:]
+		w.buf = w.buf[model.WALChunkSize:]
 	}
 	return len(p), nil
 }

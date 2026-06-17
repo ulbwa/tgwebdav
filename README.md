@@ -44,6 +44,13 @@ A single binary runs two servers over one PostgreSQL database:
 - PostgreSQL 14+ (17 recommended; a `docker-compose.yml` is provided)
 - One or more Telegram bots that are **administrators** of one or more channels
 
+> **Upgrade note (schema change):** the database now stores node and blob
+> `state` columns as `INTEGER` (go-enum values), not text. The init migration was
+> updated in place for a greenfield deploy, so a database previously initialized
+> with the older text-`state` schema is **not** compatible — re-create it fresh
+> (drop and re-migrate) or migrate the affected columns by hand. New deployments
+> need no action.
+
 ## Quick start
 
 ```sh

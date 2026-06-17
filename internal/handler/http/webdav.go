@@ -53,7 +53,9 @@ func NewWebDAVHandler(d WebDAVDeps) http.Handler {
 		LockSystem: webdav.NewMemLS(),
 		Logger: func(r *http.Request, err error) {
 			if err != nil {
-				log.Debug("webdav", "method", r.Method, "path", r.URL.Path, "err", err)
+				// Use the request context so the request_id injected by the
+				// RequestID middleware is correlated onto this debug line.
+				log.DebugContext(r.Context(), "webdav", "method", r.Method, "path", r.URL.Path, "err", err)
 			}
 		},
 	}

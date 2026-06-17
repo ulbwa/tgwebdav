@@ -67,50 +67,48 @@ func (r *WALRepository) EachChunk(ctx context.Context, nodeID uuid.UUID, fn func
 	return nil
 }
 
-// ReadRange assembles up to length bytes starting at offset by walking the
-// node's chunks in seq order. Chunks fully before the window are skipped; once
-// the window is filled, iteration stops early. This mirrors the slicing/assembly
-// logic of the GORM original.
+// ReadRange assembles up to length bytes starting at offset. WAL chunks are
+// fixed model.WALChunkSize bytes (only the final chunk may be smaller), so a
+// chunk's seq maps deterministically to its byte offset. The window therefore
+// touches only chunks firstSeq..lastSeq, and ReadRange fetches exactly those —
+// bounding memory to the requested window instead of loading the whole file.
 func (r *WALRepository) ReadRange(ctx context.Context, nodeID uuid.UUID, offset, length int64) ([]byte, error) {
 	if length <= 0 || offset < 0 {
 		return []byte{}, nil
 	}
+
 	end := offset + length
-	out := make([]byte, 0, length)
-	var cursor int64 // byte position of the start of the current chunk
+	firstSeq := offset / model.WALChunkSize
+	lastSeq := (end - 1) / model.WALChunkSize
+	base := firstSeq * model.WALChunkSize // byte offset of firstSeq's first byte
 
-	done := fmt.Errorf("done") // sentinel to short-circuit iteration
-	err := r.EachChunk(ctx, nodeID, func(c model.WALChunk) error {
-		chunkStart := cursor
-		chunkEnd := cursor + int64(len(c.Data))
-		cursor = chunkEnd
-
-		// Skip chunks entirely before the requested window.
-		if chunkEnd <= offset {
-			return nil
-		}
-		// Stop once we are past the requested window.
-		if chunkStart >= end {
-			return done
-		}
-		// Compute the overlap [from, to) within this chunk's local coordinates.
-		from := int64(0)
-		if offset > chunkStart {
-			from = offset - chunkStart
-		}
-		to := int64(len(c.Data))
-		if end < chunkEnd {
-			to = end - chunkStart
-		}
-		out = append(out, c.Data[from:to]...)
-		if cursor >= end {
-			return done
-		}
-		return nil
+	db := database.FromContext(ctx, r.pool)
+	rows, err := sqlc.New(db).ListWALChunksByNodeSeqRange(ctx, sqlc.ListWALChunksByNodeSeqRangeParams{
+		NodeID: nodeID,
+		Seq:    firstSeq,
+		Seq_2:  lastSeq,
 	})
-	if err != nil && err != done {
-		return nil, err
+	if err != nil {
+		return nil, fmt.Errorf("read range: %w", translateError(err))
 	}
+
+	// Concatenate the window's chunks in seq order (the query orders by seq).
+	assembled := make([]byte, 0, length)
+	for _, row := range rows {
+		assembled = append(assembled, row.Data...)
+	}
+
+	// Slice the window-relative range, clamping the tail to what is available.
+	from := offset - base
+	to := end - base
+	if to > int64(len(assembled)) {
+		to = int64(len(assembled))
+	}
+	if from >= to {
+		return []byte{}, nil
+	}
+	out := make([]byte, to-from)
+	copy(out, assembled[from:to])
 	return out, nil
 }
 

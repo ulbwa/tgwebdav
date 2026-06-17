@@ -129,9 +129,9 @@ func (r *blobRepository) SetState(ctx context.Context, id uuid.UUID, state model
 
 // AddRefcount atomically adds delta (possibly negative) to a blob's refcount.
 // The underlying UPDATE ... RETURNING applies the addition in a single statement
-// so concurrent callers each see a consistent increment. The new refcount is
-// discarded to match the BlobRepository signature; the absence of a row is
-// reported as model.ErrNotFound.
+// so concurrent callers each see a consistent increment. The returned refcount is
+// discarded to match the BlobRepository signature. When no row matches the id the
+// :one query yields pgx.ErrNoRows, which translateError maps to model.ErrNotFound.
 func (r *blobRepository) AddRefcount(ctx context.Context, id uuid.UUID, delta int64) error {
 	db := database.FromContext(ctx, r.pool)
 	_, err := sqlc.New(db).AddBlobRefcount(ctx, sqlc.AddBlobRefcountParams{

@@ -78,6 +78,44 @@ func (q *Queries) ListWALChunksByNode(ctx context.Context, nodeID uuid.UUID) ([]
 	return items, nil
 }
 
+const listWALChunksByNodeSeqRange = `-- name: ListWALChunksByNodeSeqRange :many
+SELECT id, node_id, seq, data, created_at FROM wal_chunks
+WHERE node_id = $1 AND seq >= $2 AND seq <= $3
+ORDER BY seq
+`
+
+type ListWALChunksByNodeSeqRangeParams struct {
+	NodeID uuid.UUID
+	Seq    int64
+	Seq_2  int64
+}
+
+func (q *Queries) ListWALChunksByNodeSeqRange(ctx context.Context, arg ListWALChunksByNodeSeqRangeParams) ([]WalChunk, error) {
+	rows, err := q.db.Query(ctx, listWALChunksByNodeSeqRange, arg.NodeID, arg.Seq, arg.Seq_2)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	var items []WalChunk
+	for rows.Next() {
+		var i WalChunk
+		if err := rows.Scan(
+			&i.ID,
+			&i.NodeID,
+			&i.Seq,
+			&i.Data,
+			&i.CreatedAt,
+		); err != nil {
+			return nil, err
+		}
+		items = append(items, i)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, err
+	}
+	return items, nil
+}
+
 const wALSizeByNode = `-- name: WALSizeByNode :one
 SELECT COALESCE(SUM(octet_length(data)), 0)::bigint FROM wal_chunks
 WHERE node_id = $1

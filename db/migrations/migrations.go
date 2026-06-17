@@ -1,7 +1,8 @@
 // Package migrations embeds the dbmate SQL migrations (db/migrations/*.sql) and
-// runs them on boot. dbmate is used purely as a library; GORM never performs
-// AutoMigrate. The embedded files live alongside this file so `go:embed` can
-// reach them while the migrations stay out of the internal tree.
+// runs them on boot. dbmate is the only schema authority — there is no runtime
+// auto-migration; the schema changes only through these versioned SQL files. The
+// embedded files live alongside this file so `go:embed` can reach them while the
+// migrations stay out of the internal tree.
 package migrations
 
 import (
