@@ -95,12 +95,15 @@ type track struct {
 	extents   []domain.Extent
 }
 
-// blobJob is one blob ready to upload: its bytes plus the distinct tracks whose
-// data it contains (decremented and possibly finalized once it is stored).
+// blobJob is one blob ready to upload: its bytes, the target channel (chosen at
+// plan time so every blob of one file lands in the SAME channel — losing one
+// channel then loses whole files rather than corrupting many), and the distinct
+// tracks whose data it contains.
 type blobJob struct {
-	blobID uuid.UUID
-	data   []byte
-	tracks []*track
+	blobID  uuid.UUID
+	data    []byte
+	channel *domain.Channel
+	tracks  []*track
 }
 
 // pendingExtent is one (node → current blob) span accumulated in the small-file
@@ -251,6 +254,13 @@ func (p *Packer) builder(ctx, uploadCtx context.Context, jobs chan<- blobJob, st
 // splitLarge emits one independent blob job per blob-sized piece of a large
 // file. The jobs upload in parallel; the node is finalized once all are stored.
 func (p *Packer) splitLarge(ctx context.Context, t *track, blobMax int64, jobs chan<- blobJob, st *packState) {
+	// One channel for the whole file: all its blobs land together.
+	channel, err := p.channels.PickForUpload(ctx)
+	if err != nil {
+		p.log.Warn("pick channel for file", "node", t.node.ID, "err", err)
+		p.failTrack(ctx, t, st)
+		return
+	}
 	var off, seq int64
 	for off < t.node.Size {
 		n := min(blobMax, t.node.Size-off)
@@ -268,7 +278,7 @@ func (p *Packer) splitLarge(ctx context.Context, t *track, blobMax int64, jobs c
 		})
 		t.remaining++
 		st.mu.Unlock()
-		jobs <- blobJob{blobID: blobID, data: data, tracks: []*track{t}}
+		jobs <- blobJob{blobID: blobID, data: data, channel: channel, tracks: []*track{t}}
 		off += int64(len(data))
 		seq++
 	}
@@ -310,6 +320,18 @@ func (p *Packer) seal(ctx context.Context, cur *run, jobs chan<- blobJob, st *pa
 	if len(cur.buf) == 0 {
 		return
 	}
+	channel, err := p.channels.PickForUpload(ctx)
+	if err != nil {
+		p.log.Warn("pick channel for blob", "err", err)
+		st.mu.Lock()
+		pending := st.pendingSmall
+		st.pendingSmall = nil
+		st.mu.Unlock()
+		for _, t := range pending {
+			_ = p.repos.Nodes.ReleaseLease(ctx, t.node.ID)
+		}
+		return
+	}
 	blobID := uuid.New()
 
 	st.mu.Lock()
@@ -330,7 +352,7 @@ func (p *Packer) seal(ctx context.Context, cur *run, jobs chan<- blobJob, st *pa
 	st.pendingSmall = nil
 	st.mu.Unlock()
 
-	jobs <- blobJob{blobID: blobID, data: cur.buf, tracks: distinct}
+	jobs <- blobJob{blobID: blobID, data: cur.buf, channel: channel, tracks: distinct}
 
 	// All buffered small files are now in a sealed blob → planned.
 	st.mu.Lock()
@@ -351,11 +373,10 @@ func (p *Packer) seal(ctx context.Context, cur *run, jobs chan<- blobJob, st *pa
 // and finalizes any node whose blobs have all landed.
 func (p *Packer) uploadWorker(ctx context.Context, jobs <-chan blobJob, st *packState) {
 	for job := range jobs {
-		channel, err := p.channels.PickForUpload(ctx)
-		if err != nil {
-			p.failJob(ctx, job, st, fmt.Errorf("pick channel: %w", err))
-			continue
-		}
+		// The channel was chosen at plan time so all of a file's blobs share it;
+		// the worker only picks a (member) bot, which still spreads uploads of one
+		// file across the channel's bots in parallel.
+		channel := job.channel
 		res, bot, err := p.upload(ctx, channel, job.data)
 		if err != nil {
 			p.failJob(ctx, job, st, err)

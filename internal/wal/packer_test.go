@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"sort"
 	"sync"
+	"sync/atomic"
 	"testing"
 	"time"
 
@@ -276,20 +277,29 @@ func (f *fakeTG) DownloadFile(context.Context, *domain.Bot, string) ([]byte, err
 	return nil, nil
 }
 
-type fakeChanSvc struct{ ch domain.Channel }
+// fakeChanSvc round-robins PickForUpload across chans, so a test can verify the
+// packer pins one file to a single channel even when several are available.
+type fakeChanSvc struct {
+	chans []domain.Channel
+	n     atomic.Int64
+}
 
-func (f fakeChanSvc) PickForUpload(context.Context) (*domain.Channel, error) {
-	c := f.ch
+func (f *fakeChanSvc) PickForUpload(context.Context) (*domain.Channel, error) {
+	if len(f.chans) == 0 {
+		return nil, domain.ErrNoBot
+	}
+	i := int(f.n.Add(1)-1) % len(f.chans)
+	c := f.chans[i]
 	return &c, nil
 }
-func (f fakeChanSvc) Add(context.Context, int64) (*domain.Channel, error) { return nil, nil }
-func (f fakeChanSvc) Remove(context.Context, uuid.UUID) error             { return nil }
-func (f fakeChanSvc) SetEvictionThreshold(context.Context, uuid.UUID, int64) error {
+func (f *fakeChanSvc) Add(context.Context, int64) (*domain.Channel, error) { return nil, nil }
+func (f *fakeChanSvc) Remove(context.Context, uuid.UUID) error             { return nil }
+func (f *fakeChanSvc) SetEvictionThreshold(context.Context, uuid.UUID, int64) error {
 	return nil
 }
-func (f fakeChanSvc) List(context.Context) ([]domain.Channel, error)          { return nil, nil }
-func (f fakeChanSvc) Get(context.Context, uuid.UUID) (*domain.Channel, error) { return nil, nil }
-func (f fakeChanSvc) ReevaluateAvailability(context.Context) error            { return nil }
+func (f *fakeChanSvc) List(context.Context) ([]domain.Channel, error)          { return nil, nil }
+func (f *fakeChanSvc) Get(context.Context, uuid.UUID) (*domain.Channel, error) { return nil, nil }
+func (f *fakeChanSvc) ReevaluateAvailability(context.Context) error            { return nil }
 
 type fakeBotSvc struct{ bot domain.Bot }
 
@@ -339,7 +349,7 @@ func newPackerTG(s *store, blobMax int64, tg *fakeTG) (*Packer, *store) {
 		repos,
 		fakeTx{repos: repos},
 		tg,
-		fakeChanSvc{ch: domain.Channel{ID: chID, TGChatID: -100123}},
+		&fakeChanSvc{chans: []domain.Channel{{ID: chID, TGChatID: -100123}}},
 		fakeBotSvc{bot: domain.Bot{ID: uuid.New(), Enabled: true}},
 		fakeSettings{s: domain.Settings{BlobMaxSize: blobMax, WALIdleTimeout: time.Millisecond}},
 		noopStats{},
@@ -563,6 +573,36 @@ func TestPackerUploadsBlobsInParallel(t *testing.T) {
 		if b.Refcount != 1 {
 			t.Errorf("blob %s refcount %d, want 1", b.ID, b.Refcount)
 		}
+	}
+}
+
+// TestPackerKeepsFileBlobsInOneChannel verifies that all blobs of a single file
+// land in the same channel even when several channels are available, so losing
+// one channel never partially corrupts a file.
+func TestPackerKeepsFileBlobsInOneChannel(t *testing.T) {
+	s := newStore()
+	chunks := make([][]byte, 8)
+	for i := range chunks {
+		chunks[i] = make([]byte, 1000)
+	}
+	s.addBuffered(8000, chunks...) // 8 blobs
+	p, _ := newPacker(s, 1000)
+	// Three channels round-robin; the file must still go to exactly one.
+	p.channels = &fakeChanSvc{chans: []domain.Channel{
+		{ID: uuid.New(), TGChatID: -1001},
+		{ID: uuid.New(), TGChatID: -1002},
+		{ID: uuid.New(), TGChatID: -1003},
+	}}
+	runUntilBlobs(t, p, s, 8)
+
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	channels := map[uuid.UUID]bool{}
+	for _, b := range s.blobs {
+		channels[b.ChannelID] = true
+	}
+	if len(channels) != 1 {
+		t.Errorf("file's blobs spread across %d channels, want 1", len(channels))
 	}
 }
 
