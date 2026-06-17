@@ -1,0 +1,57 @@
+version: '3'
+
+tasks:
+  generate:
+    desc: Run all code generators
+    cmds:
+      - go generate ./...
+      - go run github.com/sqlc-dev/sqlc/cmd/sqlc@latest generate -f db/sqlc.yaml
+      # NOTE: oapi paths move to api/openapi/ in a later phase
+      - go run github.com/oapi-codegen/oapi-codegen/v2/cmd/oapi-codegen@v2.4.1 -config internal/management/oapi.yaml api/openapi.yaml
+
+  test:
+    desc: Run all tests with race detector
+    cmds:
+      - go test ./... -race -count=1
+
+  lint:
+    desc: Run golangci-lint via go run
+    cmds:
+      - go run github.com/golangci/golangci-lint/v2/cmd/golangci-lint@latest run
+
+  migrate:up:
+    desc: Apply all pending migrations (DATABASE_URL from env)
+    cmds:
+      - dbmate --migrations-dir db/migrations up
+
+  migrate:down:
+    desc: Roll back the last migration (DATABASE_URL from env)
+    cmds:
+      - dbmate --migrations-dir db/migrations down
+
+  migrate:new:
+    desc: Create a new migration file (pass name via -- <name>)
+    cmds:
+      - dbmate --migrations-dir db/migrations new {{.CLI_ARGS}}
+
+  schema:dump:
+    desc: Spin up a throwaway Postgres, migrate, dump schema, stop container
+    cmds:
+      - |
+        CONTAINER=$(docker run -d --rm \
+          -e POSTGRES_PASSWORD=postgres \
+          -p 15432:5432 \
+          postgres:17-alpine)
+        defer() { docker stop "$CONTAINER" > /dev/null; }
+        trap defer EXIT
+
+        export DATABASE_URL="postgres://postgres:postgres@localhost:15432/postgres?sslmode=disable"
+
+        # Wait for Postgres to be ready
+        for i in $(seq 1 30); do
+          docker exec "$CONTAINER" pg_isready -U postgres > /dev/null 2>&1 && break
+          sleep 1
+        done
+
+        dbmate --no-dump-schema up
+        pg_dump --schema-only --no-owner --no-acl "$DATABASE_URL" > db/schema.sql
