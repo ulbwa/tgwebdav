@@ -14,11 +14,14 @@ import (
 )
 
 // DBTX is the pgx-compatible executor surface repositories use. Both
-// *pgxpool.Pool and pgx.Tx satisfy it, so FromContext can return either.
+// *pgxpool.Pool and pgx.Tx satisfy it, so FromContext can return either. It
+// matches the interface sqlc generates (including CopyFrom, used by :copyfrom
+// queries) so the same value can be handed to sqlc.New.
 type DBTX interface {
 	Exec(ctx context.Context, sql string, args ...any) (pgconn.CommandTag, error)
 	Query(ctx context.Context, sql string, args ...any) (pgx.Rows, error)
 	QueryRow(ctx context.Context, sql string, args ...any) pgx.Row
+	CopyFrom(ctx context.Context, tableName pgx.Identifier, columnNames []string, rowSrc pgx.CopyFromSource) (int64, error)
 }
 
 // Compile-time proof that the two concrete executors satisfy DBTX.
@@ -55,6 +58,13 @@ func NewTxManager(pool *pgxpool.Pool) *TxManager {
 // on it. fn returning an error rolls back and the error is returned; a panic in
 // fn rolls back and re-panics; success commits.
 func (m *TxManager) WithTx(ctx context.Context, fn func(ctx context.Context) error) (err error) {
+	// If a transaction is already active on this context, join it: nested
+	// WithTx calls run as part of the outermost transaction, which owns the
+	// commit/rollback. This keeps composed service calls atomic.
+	if _, ok := ctx.Value(txKey{}).(pgx.Tx); ok {
+		return fn(ctx)
+	}
+
 	tx, err := m.pool.Begin(ctx)
 	if err != nil {
 		return err
