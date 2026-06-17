@@ -132,7 +132,7 @@ func run(cfg *config.Config) error {
 	// 7. Background workers.
 	packer := wal.NewPacker(repos, tx, tg, channelSvc, botSvc, settingsSvc, statsRec, logger)
 	startWorker(&wg, func() { packer.Run(workerCtx) })
-	startWorker(&wg, func() { runMaintenance(workerCtx, repos, channelSvc, botSvc, logger) })
+	startWorker(&wg, func() { runMaintenance(workerCtx, repos, tg, channelSvc, botSvc, logger) })
 
 	// 8. HTTP servers.
 	mgmtHandlers := management.NewHandlers(management.Deps{

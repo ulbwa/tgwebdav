@@ -152,9 +152,13 @@ WebDAV GET ──► node ──► stored?  yes ─► extents ─► [disk cac
   read cursor in parallel (bounded to cache capacity), so sequential reads do not
   stall on the next blob. A definitively missing message marks the blob
   permanently unavailable and cascade-deletes files that referenced only it.
-- **Delete/Move/Copy**: DELETE removes nodes and decrements blob refcounts
-  (messages are never auto-deleted — they may be shared); MOVE rewrites paths;
-  COPY duplicates extents and bumps refcounts, sharing blobs without re-upload.
+- **Delete/Move/Copy**: DELETE removes nodes and decrements blob refcounts; once
+  a blob reaches refcount 0 (no file references it) a low-priority background
+  reaper physically deletes its Telegram message and drops the row — throttled,
+  using the same availability-aware bot selection as uploads and backing off on
+  rate limits, so it never competes with uploads for the bots' budget. MOVE
+  rewrites paths; COPY duplicates extents and bumps refcounts, sharing blobs
+  without re-upload.
 
 ## Performance
 

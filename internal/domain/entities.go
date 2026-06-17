@@ -185,6 +185,7 @@ type Event struct {
 const (
 	EventBlobUnavailable = "blob_unavailable"
 	EventBlobPermDeleted = "blob_perm_deleted"
+	EventBlobReaped      = "blob_reaped"
 	EventCascadeDelete   = "cascade_delete"
 	EventBotDisabled     = "bot_disabled"
 	EventBotUnavailable  = "bot_unavailable"
