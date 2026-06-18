@@ -581,13 +581,3 @@ func (f *FileSystem) CheckQuota(ctx context.Context, p string, additional int64)
 	}
 	return nil
 }
-
-// QuotaUsage returns (used, total) bytes for the acting user (total 0 = unlimited).
-func (f *FileSystem) QuotaUsage(ctx context.Context) (used, total int64, err error) {
-	user, err := acting(ctx)
-	if err != nil {
-		return 0, 0, err
-	}
-	used, err = f.nodes.SumSizeByUser(ctx, user.ID)
-	return used, user.QuotaBytes, err
-}

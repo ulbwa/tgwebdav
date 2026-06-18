@@ -70,7 +70,6 @@ type readerExtentStore interface {
 // telegram.ErrMessageNotFound and telegram.ErrForbidden.
 type readerTelegram interface {
 	DownloadFile(ctx context.Context, bot *model.Bot, fileID string) ([]byte, error)
-	SendByFileID(ctx context.Context, bot *model.Bot, chatID int64, fileID string) (model.TGSendResult, error)
 	ForwardMessage(ctx context.Context, bot *model.Bot, toChatID, fromChatID, messageID int64) (model.TGSendResult, error)
 	DeleteMessage(ctx context.Context, bot *model.Bot, chatID, messageID int64) error
 }

@@ -378,10 +378,6 @@ func (t *fakeTG) DeleteMessage(_ context.Context, _ *model.Bot, _, messageID int
 	return nil
 }
 
-func (t *fakeTG) SendByFileID(context.Context, *model.Bot, int64, string) (model.TGSendResult, error) {
-	return model.TGSendResult{}, nil
-}
-
 // ---- blobHarness ---------------------------------------------------------------
 
 type blobHarness struct {

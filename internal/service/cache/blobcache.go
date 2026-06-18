@@ -1,6 +1,6 @@
 // Package cache implements a disk-backed LRU over whole blobs, keyed by blob
-// UUID. It satisfies domain.BlobCache: each blob is stored as a single file
-// <dir>/<uuid>.blob and an in-memory index tracks size, last-access time and
+// UUID. It satisfies the blob reader's cache interface: each blob is stored as a
+// single file <dir>/<uuid>.blob and an in-memory index tracks size, last-access time and
 // LRU ordering. The total on-disk size is bounded by maxBytes (least-recently
 // used entries are evicted on Put), and a background janitor drops entries that
 // have not been touched within idleTTL.
@@ -33,8 +33,8 @@ type entry struct {
 	elem       *list.Element // position in Cache.lru; value is *entry
 }
 
-// Cache is a disk-backed, size-bounded LRU cache of whole blobs. It implements
-// domain.BlobCache and is safe for concurrent use.
+// Cache is a disk-backed, size-bounded LRU cache of whole blobs. It satisfies
+// the blob reader's cache interface and is safe for concurrent use.
 type Cache struct {
 	dir      string
 	maxBytes int64
