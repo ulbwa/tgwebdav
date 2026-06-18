@@ -96,7 +96,7 @@ func TestNodeRepository_CRUD(t *testing.T) {
 	if err := repo.Delete(ctx, n.ID); err != nil {
 		t.Fatalf("delete: %v", err)
 	}
-	if _, err := repo.GetByID(ctx, n.ID); !errors.Is(err, model.ErrNotFound) {
+	if _, err := repo.GetByID(ctx, n.ID); !errors.Is(err, ErrNotFound) {
 		t.Fatalf("get after delete = %v, want ErrNotFound", err)
 	}
 }
@@ -107,19 +107,19 @@ func TestNodeRepository_NotFound(t *testing.T) {
 	ctx := context.Background()
 	userID := insertUser(t, pool)
 
-	if _, err := repo.GetByID(ctx, uuid.New()); !errors.Is(err, model.ErrNotFound) {
+	if _, err := repo.GetByID(ctx, uuid.New()); !errors.Is(err, ErrNotFound) {
 		t.Errorf("GetByID missing = %v, want ErrNotFound", err)
 	}
-	if _, err := repo.GetByPath(ctx, userID, "/nope"); !errors.Is(err, model.ErrNotFound) {
+	if _, err := repo.GetByPath(ctx, userID, "/nope"); !errors.Is(err, ErrNotFound) {
 		t.Errorf("GetByPath missing = %v, want ErrNotFound", err)
 	}
-	if err := repo.Update(ctx, newFileNode(userID, "/ghost", 0)); !errors.Is(err, model.ErrNotFound) {
+	if err := repo.Update(ctx, newFileNode(userID, "/ghost", 0)); !errors.Is(err, ErrNotFound) {
 		t.Errorf("Update missing = %v, want ErrNotFound", err)
 	}
-	if err := repo.Delete(ctx, uuid.New()); !errors.Is(err, model.ErrNotFound) {
+	if err := repo.Delete(ctx, uuid.New()); !errors.Is(err, ErrNotFound) {
 		t.Errorf("Delete missing = %v, want ErrNotFound", err)
 	}
-	if err := repo.ReleaseLease(ctx, uuid.New()); !errors.Is(err, model.ErrNotFound) {
+	if err := repo.ReleaseLease(ctx, uuid.New()); !errors.Is(err, ErrNotFound) {
 		t.Errorf("ReleaseLease missing = %v, want ErrNotFound", err)
 	}
 }

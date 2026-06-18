@@ -8,6 +8,7 @@ import (
 	"time"
 
 	"github.com/ulbwa/tgwebdav/internal/model"
+	"github.com/ulbwa/tgwebdav/internal/repository"
 )
 
 // recordCall captures one Record invocation.
@@ -316,11 +317,11 @@ func TestStatsLatestDelegatesToRepo(t *testing.T) {
 }
 
 func TestStatsLatestPropagatesNotFound(t *testing.T) {
-	store := &fakeStatWriter{latestErr: model.ErrNotFound}
+	store := &fakeStatWriter{latestErr: repository.ErrNotFound}
 	r := NewStatRecorder(store, time.Hour, nil)
 
 	_, err := r.Latest(context.Background(), model.MetricStorageBytes, "missing")
-	if !errors.Is(err, model.ErrNotFound) {
+	if !errors.Is(err, repository.ErrNotFound) {
 		t.Fatalf("Latest: expected ErrNotFound, got %v", err)
 	}
 }

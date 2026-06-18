@@ -106,7 +106,7 @@ func (r *blobRepository) Update(ctx context.Context, b *model.Blob) error {
 		return fmt.Errorf("update blob: %w", translateError(err))
 	}
 	if n == 0 {
-		return fmt.Errorf("update blob: %w", model.ErrNotFound)
+		return fmt.Errorf("update blob: %w", ErrNotFound)
 	}
 	return nil
 }
@@ -122,7 +122,7 @@ func (r *blobRepository) SetState(ctx context.Context, id uuid.UUID, state model
 		return fmt.Errorf("set blob state: %w", translateError(err))
 	}
 	if n == 0 {
-		return fmt.Errorf("set blob state: %w", model.ErrNotFound)
+		return fmt.Errorf("set blob state: %w", ErrNotFound)
 	}
 	return nil
 }
@@ -131,7 +131,7 @@ func (r *blobRepository) SetState(ctx context.Context, id uuid.UUID, state model
 // The underlying UPDATE ... RETURNING applies the addition in a single statement
 // so concurrent callers each see a consistent increment. The returned refcount is
 // discarded to match the BlobRepository signature. When no row matches the id the
-// :one query yields pgx.ErrNoRows, which translateError maps to model.ErrNotFound.
+// :one query yields pgx.ErrNoRows, which translateError maps to ErrNotFound.
 func (r *blobRepository) AddRefcount(ctx context.Context, id uuid.UUID, delta int64) error {
 	db := database.FromContext(ctx, r.pool)
 	_, err := sqlc.New(db).AddBlobRefcount(ctx, sqlc.AddBlobRefcountParams{
@@ -239,7 +239,7 @@ func (r *blobRepository) Delete(ctx context.Context, id uuid.UUID) error {
 		return fmt.Errorf("delete blob: %w", translateError(err))
 	}
 	if n == 0 {
-		return fmt.Errorf("delete blob: %w", model.ErrNotFound)
+		return fmt.Errorf("delete blob: %w", ErrNotFound)
 	}
 	return nil
 }

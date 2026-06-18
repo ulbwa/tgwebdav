@@ -1,8 +1,8 @@
 // Package telegram talks to the official Telegram Bot API using only net/http.
 // Every call is scoped to a specific *model.Bot so the client can enforce
 // per-bot request pacing and surface the typed errors the rest of tgwebdav
-// expects (*model.RateLimitError, model.ErrTelegramNotFound,
-// model.ErrTelegramForbidden).
+// expects (*RateLimitError, ErrTelegramNotFound,
+// ErrTelegramForbidden).
 //
 // It exposes a concrete *Client (no interface): consumers declare their own
 // narrow interfaces that this struct structurally satisfies.
@@ -228,9 +228,9 @@ func redactToken(err error, token string) error {
 
 // mapError translates a failed Telegram envelope into a typed model error.
 //
-//   - HTTP 429 (or a retry_after hint) → *model.RateLimitError.
-//   - "not found" style descriptions   → model.ErrTelegramNotFound.
-//   - HTTP 403                         → model.ErrTelegramForbidden.
+//   - HTTP 429 (or a retry_after hint) → *RateLimitError.
+//   - "not found" style descriptions   → ErrTelegramNotFound.
+//   - HTTP 403                         → ErrTelegramForbidden.
 //   - anything else                    → a wrapped error carrying the code and
 //     description for diagnostics.
 func (c *Client) mapError(env apiResponse) error {
@@ -244,7 +244,7 @@ func (c *Client) mapError(env apiResponse) error {
 			// instead of 0 (which would leave it immediately reusable).
 			retry = 5 * time.Second
 		}
-		return &model.RateLimitError{RetryAfter: retry}
+		return &RateLimitError{RetryAfter: retry}
 	}
 
 	desc := strings.ToLower(env.Description)
@@ -253,11 +253,11 @@ func (c *Client) mapError(env apiResponse) error {
 		strings.Contains(desc, "message_id_invalid") ||
 		strings.Contains(desc, "wrong file_id") ||
 		strings.Contains(desc, "wrong remote file identifier") {
-		return fmt.Errorf("%w: %s", model.ErrTelegramNotFound, env.Description)
+		return fmt.Errorf("%w: %s", ErrTelegramNotFound, env.Description)
 	}
 
 	if env.ErrorCode == 403 {
-		return fmt.Errorf("%w: %s", model.ErrTelegramForbidden, env.Description)
+		return fmt.Errorf("%w: %s", ErrTelegramForbidden, env.Description)
 	}
 
 	return fmt.Errorf("telegram: api error %d: %s", env.ErrorCode, env.Description)
@@ -299,8 +299,8 @@ func (c *Client) GetChat(ctx context.Context, bot *model.Bot, chatID int64) (str
 
 	raw, err := c.do(ctx, bot, req)
 	if err != nil {
-		if errors.Is(err, model.ErrTelegramNotFound) ||
-			errors.Is(err, model.ErrTelegramForbidden) {
+		if errors.Is(err, ErrTelegramNotFound) ||
+			errors.Is(err, ErrTelegramForbidden) {
 			return "", false, nil
 		}
 		return "", false, err
@@ -406,7 +406,7 @@ func (c *Client) DeleteMessage(ctx context.Context, bot *model.Bot, chatID, mess
 	_, err = c.do(ctx, bot, req)
 	if err != nil {
 		// Already gone is success for a best-effort delete.
-		if errors.Is(err, model.ErrTelegramNotFound) {
+		if errors.Is(err, ErrTelegramNotFound) {
 			return nil
 		}
 		return err
@@ -436,14 +436,14 @@ func (c *Client) DownloadFile(ctx context.Context, bot *model.Bot, fileID string
 		return nil, fmt.Errorf("telegram: decode getFile result: %w", err)
 	}
 	if fr.FilePath == "" {
-		return nil, fmt.Errorf("%w: empty file_path", model.ErrTelegramNotFound)
+		return nil, fmt.Errorf("%w: empty file_path", ErrTelegramNotFound)
 	}
 
 	return c.downloadPath(ctx, bot, fr.FilePath)
 }
 
 // downloadPath fetches the raw bytes for a resolved file_path. A 404 from the
-// CDN is mapped to model.ErrTelegramNotFound; other non-200 responses become a
+// CDN is mapped to ErrTelegramNotFound; other non-200 responses become a
 // wrapped error.
 func (c *Client) downloadPath(ctx context.Context, bot *model.Bot, filePath string) ([]byte, error) {
 	dlURL := fmt.Sprintf("%s/file/bot%s/%s", c.baseURL(), bot.Token, filePath)
@@ -464,7 +464,7 @@ func (c *Client) downloadPath(ctx context.Context, bot *model.Bot, filePath stri
 	defer func() { _ = resp.Body.Close() }()
 
 	if resp.StatusCode == http.StatusNotFound {
-		return nil, fmt.Errorf("%w: file path %q", model.ErrTelegramNotFound, filePath)
+		return nil, fmt.Errorf("%w: file path %q", ErrTelegramNotFound, filePath)
 	}
 	if resp.StatusCode != http.StatusOK {
 		snippet, _ := io.ReadAll(io.LimitReader(resp.Body, 512))

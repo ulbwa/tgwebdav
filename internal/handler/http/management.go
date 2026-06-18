@@ -17,7 +17,9 @@ import (
 	openapi "github.com/ulbwa/tgwebdav/api/openapi"
 	"github.com/ulbwa/tgwebdav/internal/handler/http/middleware"
 	"github.com/ulbwa/tgwebdav/internal/model"
+	"github.com/ulbwa/tgwebdav/internal/repository"
 	"github.com/ulbwa/tgwebdav/internal/service"
+	"github.com/ulbwa/tgwebdav/internal/service/webdavfs"
 	management "github.com/ulbwa/tgwebdav/pkg/openapi/management"
 )
 
@@ -146,36 +148,36 @@ func (m muxAdapter) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 
 // ---- error / response helpers ---------------------------------------------
 
-// statusForError maps a model sentinel error onto an HTTP status code. It is the
-// canonical port of the old management.statusForError (domain→model), preserving
-// every mapping.
+// statusForError maps a sentinel error (from the repository, service, webdavfs
+// or this handler) onto an HTTP status code via errors.Is. It is the canonical
+// port of the old management.statusForError, preserving every mapping.
 func statusForError(err error) int {
 	switch {
 	case err == nil:
 		return http.StatusOK
-	case errors.Is(err, model.ErrNotFound):
+	case errors.Is(err, repository.ErrNotFound):
 		return http.StatusNotFound
-	case errors.Is(err, model.ErrAlreadyExists):
+	case errors.Is(err, repository.ErrAlreadyExists):
 		return http.StatusConflict
-	case errors.Is(err, model.ErrConflict):
+	case errors.Is(err, ErrConflict):
 		return http.StatusConflict
-	case errors.Is(err, model.ErrUnauthorized):
+	case errors.Is(err, service.ErrUnauthorized):
 		return http.StatusUnauthorized
-	case errors.Is(err, model.ErrForbidden):
+	case errors.Is(err, service.ErrForbidden):
 		return http.StatusForbidden
-	case errors.Is(err, model.ErrInvalidPath),
-		errors.Is(err, model.ErrNotDir),
-		errors.Is(err, model.ErrIsDir),
-		errors.Is(err, model.ErrNotEmpty):
+	case errors.Is(err, ErrInvalidPath),
+		errors.Is(err, ErrNotDir),
+		errors.Is(err, ErrIsDir),
+		errors.Is(err, ErrNotEmpty):
 		return http.StatusBadRequest
-	case errors.Is(err, model.ErrQuotaExceeded):
+	case errors.Is(err, webdavfs.ErrQuotaExceeded):
 		return http.StatusInsufficientStorage
-	case errors.Is(err, model.ErrFileTooLarge):
+	case errors.Is(err, ErrFileTooLarge):
 		return http.StatusRequestEntityTooLarge
-	case errors.Is(err, model.ErrRateLimited):
+	case errors.Is(err, ErrRateLimited):
 		return http.StatusTooManyRequests
-	case errors.Is(err, model.ErrNoBot),
-		errors.Is(err, model.ErrBlobUnavailable):
+	case errors.Is(err, service.ErrNoBot),
+		errors.Is(err, service.ErrBlobUnavailable):
 		return http.StatusServiceUnavailable
 	default:
 		return http.StatusInternalServerError

@@ -10,6 +10,7 @@ import (
 	"github.com/google/uuid"
 
 	"github.com/ulbwa/tgwebdav/internal/model"
+	"github.com/ulbwa/tgwebdav/internal/repository"
 )
 
 // Copy duplicates src to dst. Stored files share their immutable blobs (extents
@@ -65,11 +66,11 @@ func (f *FileSystem) Copy(ctx context.Context, src, dst string, recursive, overw
 					return err
 				}
 				add -= freed
-			} else if !errors.Is(err, model.ErrNotFound) {
+			} else if !errors.Is(err, repository.ErrNotFound) {
 				return err
 			}
 			if used+add > user.QuotaBytes {
-				return model.ErrQuotaExceeded
+				return ErrQuotaExceeded
 			}
 		}
 		if existing, err := f.nodes.GetByPath(ctx, user.ID, d); err == nil {
@@ -79,7 +80,7 @@ func (f *FileSystem) Copy(ctx context.Context, src, dst string, recursive, overw
 			if err := f.removeWithin(ctx, user.ID, existing); err != nil {
 				return err
 			}
-		} else if !errors.Is(err, model.ErrNotFound) {
+		} else if !errors.Is(err, repository.ErrNotFound) {
 			return err
 		}
 		return f.copyNode(ctx, user.ID, srcNode, d, &parent.ID, recursive)

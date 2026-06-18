@@ -15,6 +15,7 @@ import (
 
 	canonhttp "github.com/ulbwa/tgwebdav/internal/handler/http"
 	"github.com/ulbwa/tgwebdav/internal/model"
+	"github.com/ulbwa/tgwebdav/internal/repository"
 	"github.com/ulbwa/tgwebdav/internal/service"
 	"github.com/ulbwa/tgwebdav/internal/service/webdavfs"
 )
@@ -48,7 +49,7 @@ func (s *memFSStore) Create(_ context.Context, n *model.Node) error {
 	defer s.mu.Unlock()
 	for _, ex := range s.nodes {
 		if ex.UserID == n.UserID && ex.Path == n.Path {
-			return model.ErrAlreadyExists
+			return repository.ErrAlreadyExists
 		}
 	}
 	cp := *n
@@ -60,7 +61,7 @@ func (s *memFSStore) Update(_ context.Context, n *model.Node) error {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	if _, ok := s.nodes[n.ID]; !ok {
-		return model.ErrNotFound
+		return repository.ErrNotFound
 	}
 	cp := *n
 	s.nodes[n.ID] = &cp
@@ -72,7 +73,7 @@ func (s *memFSStore) Delete(_ context.Context, id uuid.UUID) error {
 	defer s.mu.Unlock()
 	node, ok := s.nodes[id]
 	if !ok {
-		return model.ErrNotFound
+		return repository.ErrNotFound
 	}
 	prefix := node.Path
 	for nid, n := range s.nodes {
@@ -90,7 +91,7 @@ func (s *memFSStore) GetByID(_ context.Context, id uuid.UUID) (*model.Node, erro
 	defer s.mu.Unlock()
 	n, ok := s.nodes[id]
 	if !ok {
-		return nil, model.ErrNotFound
+		return nil, repository.ErrNotFound
 	}
 	cp := *n
 	return &cp, nil
@@ -105,7 +106,7 @@ func (s *memFSStore) GetByPath(_ context.Context, userID uuid.UUID, p string) (*
 			return &cp, nil
 		}
 	}
-	return nil, model.ErrNotFound
+	return nil, repository.ErrNotFound
 }
 
 func (s *memFSStore) ListChildren(_ context.Context, userID, parentID uuid.UUID) ([]model.Node, error) {

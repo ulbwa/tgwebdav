@@ -10,7 +10,9 @@ import (
 
 	"github.com/google/uuid"
 
+	"github.com/ulbwa/tgwebdav/internal/client/telegram"
 	"github.com/ulbwa/tgwebdav/internal/model"
+	"github.com/ulbwa/tgwebdav/internal/repository"
 )
 
 // ---- fakes -----------------------------------------------------------------
@@ -30,7 +32,7 @@ func (f *fakeBlobs) GetByID(_ context.Context, id uuid.UUID) (*model.Blob, error
 	defer f.mu.Unlock()
 	b, ok := f.items[id]
 	if !ok {
-		return nil, model.ErrNotFound
+		return nil, repository.ErrNotFound
 	}
 	cp := *b
 	return &cp, nil
@@ -41,7 +43,7 @@ func (f *fakeBlobs) SetState(_ context.Context, id uuid.UUID, state model.BlobSt
 	defer f.mu.Unlock()
 	b, ok := f.items[id]
 	if !ok {
-		return model.ErrNotFound
+		return repository.ErrNotFound
 	}
 	b.State = state
 	return nil
@@ -60,7 +62,7 @@ func (f *fakeChannels) put(c *model.Channel) { f.items[c.ID] = c }
 func (f *fakeChannels) GetByID(_ context.Context, id uuid.UUID) (*model.Channel, error) {
 	c, ok := f.items[id]
 	if !ok {
-		return nil, model.ErrNotFound
+		return nil, repository.ErrNotFound
 	}
 	cp := *c
 	return &cp, nil
@@ -84,7 +86,7 @@ func (f *fakeBots) GetByID(_ context.Context, id uuid.UUID) (*model.Bot, error) 
 	defer f.mu.Unlock()
 	b, ok := f.items[id]
 	if !ok {
-		return nil, model.ErrNotFound
+		return nil, repository.ErrNotFound
 	}
 	cp := *b
 	return &cp, nil
@@ -95,7 +97,7 @@ func (f *fakeBots) SetUnavailableUntil(_ context.Context, id uuid.UUID, until *t
 	defer f.mu.Unlock()
 	b, ok := f.items[id]
 	if !ok {
-		return model.ErrNotFound
+		return repository.ErrNotFound
 	}
 	b.UnavailableUntil = until
 	return nil
@@ -347,7 +349,7 @@ func (t *fakeTG) DownloadFile(_ context.Context, _ *model.Bot, fileID string) ([
 	t.downloadConc--
 	t.mu.Unlock()
 	if !ok {
-		return nil, model.ErrTelegramNotFound
+		return nil, telegram.ErrTelegramNotFound
 	}
 	return r.data, r.err
 }
@@ -364,7 +366,7 @@ func (t *fakeTG) ForwardMessage(_ context.Context, bot *model.Bot, _, _, _ int64
 	f, ok := t.forwardByBot[bot.Username]
 	t.mu.Unlock()
 	if !ok {
-		return model.TGSendResult{}, model.ErrTelegramNotFound
+		return model.TGSendResult{}, telegram.ErrTelegramNotFound
 	}
 	return f.res, f.err
 }
@@ -507,7 +509,7 @@ func TestReadBlob_NotReadable(t *testing.T) {
 	h.blobs.put(blob)
 
 	_, err := h.reader.ReadBlob(context.Background(), blob.ID)
-	if !errors.Is(err, model.ErrBlobUnavailable) {
+	if !errors.Is(err, ErrBlobUnavailable) {
 		t.Fatalf("expected ErrBlobUnavailable, got %v", err)
 	}
 }
@@ -580,7 +582,7 @@ func TestReadBlob_StaleFileIDFallsBackToRecovery(t *testing.T) {
 		t.Fatal(err)
 	}
 	// Cached file_id download returns not-found -> stale.
-	h.tg.downloadByFileID[staleID] = tgResult{err: model.ErrTelegramNotFound}
+	h.tg.downloadByFileID[staleID] = tgResult{err: telegram.ErrTelegramNotFound}
 
 	// Forward-recovery succeeds and yields a fresh file_id.
 	const freshID = "FILE_FRESH"
@@ -629,15 +631,15 @@ func TestReadBlob_PermNotFound_CachedThenRecovery_CascadeDeletes(t *testing.T) {
 		t.Fatal(err)
 	}
 	// Cached download not found (stale) AND forward also not found (gone).
-	h.tg.downloadByFileID[staleID] = tgResult{err: model.ErrTelegramNotFound}
-	h.tg.forwardByBot[bot.Username] = tgForward{err: model.ErrTelegramNotFound}
+	h.tg.downloadByFileID[staleID] = tgResult{err: telegram.ErrTelegramNotFound}
+	h.tg.forwardByBot[bot.Username] = tgForward{err: telegram.ErrTelegramNotFound}
 
 	// A node lives solely on this blob.
 	soleNode := uuid.New()
 	h.extents.solelyOnBlob[blob.ID] = []uuid.UUID{soleNode}
 
 	_, err := h.reader.ReadBlob(context.Background(), blob.ID)
-	if !errors.Is(err, model.ErrBlobUnavailable) {
+	if !errors.Is(err, ErrBlobUnavailable) {
 		t.Fatalf("expected ErrBlobUnavailable, got %v", err)
 	}
 
@@ -666,13 +668,13 @@ func TestReadBlob_PermNotFound_RecoveryOnlyPath(t *testing.T) {
 	blob := h.addStoredBlob(10)
 
 	// No cached file_id; recovery path used directly. Forward not found -> gone.
-	h.tg.forwardByBot[bot.Username] = tgForward{err: model.ErrTelegramNotFound}
+	h.tg.forwardByBot[bot.Username] = tgForward{err: telegram.ErrTelegramNotFound}
 
 	soleNode := uuid.New()
 	h.extents.solelyOnBlob[blob.ID] = []uuid.UUID{soleNode}
 
 	_, err := h.reader.ReadBlob(context.Background(), blob.ID)
-	if !errors.Is(err, model.ErrBlobUnavailable) {
+	if !errors.Is(err, ErrBlobUnavailable) {
 		t.Fatalf("expected ErrBlobUnavailable, got %v", err)
 	}
 	b, _ := h.blobs.GetByID(context.Background(), blob.ID)
@@ -691,7 +693,7 @@ func TestReadBlob_RateLimitMovesToNextBot(t *testing.T) {
 	blob := h.addStoredBlob(10)
 
 	// First bot (by member order) is rate-limited on forward.
-	h.tg.forwardByBot[limited.Username] = tgForward{err: &model.RateLimitError{RetryAfter: 30 * time.Second}}
+	h.tg.forwardByBot[limited.Username] = tgForward{err: &telegram.RateLimitError{RetryAfter: 30 * time.Second}}
 	// Second bot recovers successfully.
 	const freshID = "FILE_OK"
 	want := []byte("second-bot-bytes")
@@ -728,7 +730,7 @@ func TestReadBlob_ForbiddenMovesToNextBotAndRecordsNonMember(t *testing.T) {
 	good := h.addBot("good2")
 	blob := h.addStoredBlob(10)
 
-	h.tg.forwardByBot[forbidden.Username] = tgForward{err: model.ErrTelegramForbidden}
+	h.tg.forwardByBot[forbidden.Username] = tgForward{err: telegram.ErrTelegramForbidden}
 	const freshID = "FILE_OK2"
 	want := []byte("ok-bytes")
 	h.tg.forwardByBot[good.Username] = tgForward{res: model.TGSendResult{MessageID: 7, FileID: freshID}}
@@ -759,7 +761,7 @@ func TestReadBlob_NoMemberBot(t *testing.T) {
 	blob := h.addStoredBlob(10) // no bots added
 
 	_, err := h.reader.ReadBlob(context.Background(), blob.ID)
-	if !errors.Is(err, model.ErrBlobUnavailable) {
+	if !errors.Is(err, ErrBlobUnavailable) {
 		t.Fatalf("expected ErrBlobUnavailable, got %v", err)
 	}
 }

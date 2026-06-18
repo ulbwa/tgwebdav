@@ -7,7 +7,9 @@ import (
 
 	"github.com/google/uuid"
 
+	"github.com/ulbwa/tgwebdav/internal/client/telegram"
 	"github.com/ulbwa/tgwebdav/internal/model"
+	"github.com/ulbwa/tgwebdav/internal/repository"
 )
 
 // ---- maintenance fakes -----------------------------------------------------
@@ -62,7 +64,7 @@ func newMaintFakeChannels() *maintFakeChannels {
 func (f *maintFakeChannels) GetByID(_ context.Context, id uuid.UUID) (*model.Channel, error) {
 	c, ok := f.items[id]
 	if !ok {
-		return nil, model.ErrNotFound
+		return nil, repository.ErrNotFound
 	}
 	cp := *c
 	return &cp, nil
@@ -217,7 +219,7 @@ func TestReapDeletesMessageRowAndLogsEvent(t *testing.T) {
 	}
 }
 
-// TestReapRateLimitParksBotAndStops verifies that a *model.RateLimitError on the
+// TestReapRateLimitParksBotAndStops verifies that a *telegram.RateLimitError on the
 // first delete parks the bot and stops the cycle without touching the remaining
 // blob (uploads keep priority).
 func TestReapRateLimitParksBotAndStops(t *testing.T) {
@@ -235,7 +237,7 @@ func TestReapRateLimitParksBotAndStops(t *testing.T) {
 		{ID: uuid.New(), ChannelID: channelID, MessageID: 1},
 		{ID: uuid.New(), ChannelID: channelID, MessageID: 2},
 	}
-	h.tg.deleteErr = &model.RateLimitError{RetryAfter: 30 * time.Second}
+	h.tg.deleteErr = &telegram.RateLimitError{RetryAfter: 30 * time.Second}
 
 	before := time.Now()
 	h.svc().reap(ctx)
@@ -274,7 +276,7 @@ func TestReapNotFoundStillDeletesRow(t *testing.T) {
 
 	blobID := uuid.New()
 	h.blobs.collectable = []model.Blob{{ID: blobID, ChannelID: channelID, MessageID: 7}}
-	h.tg.deleteErr = model.ErrTelegramNotFound
+	h.tg.deleteErr = telegram.ErrTelegramNotFound
 
 	h.svc().reap(ctx)
 

@@ -8,6 +8,7 @@ import (
 
 	"github.com/google/uuid"
 
+	"github.com/ulbwa/tgwebdav/internal/client/telegram"
 	"github.com/ulbwa/tgwebdav/internal/model"
 )
 
@@ -172,10 +173,10 @@ func (s *MaintenanceService) reap(ctx context.Context) {
 
 		err = s.tg.DeleteMessage(ctx, bot, channel.TGChatID, b.MessageID)
 		switch {
-		case err == nil, errors.Is(err, model.ErrTelegramNotFound):
+		case err == nil, errors.Is(err, telegram.ErrTelegramNotFound):
 			// Deleted, or already gone — drop the row either way.
 		default:
-			var rl *model.RateLimitError
+			var rl *telegram.RateLimitError
 			if errors.As(err, &rl) {
 				until := time.Now().Add(rl.RetryAfter)
 				_ = s.bots.SetUnavailableUntil(ctx, bot.ID, &until)

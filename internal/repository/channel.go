@@ -74,7 +74,7 @@ func (r *ChannelRepository) Update(ctx context.Context, c *model.Channel) error 
 		return fmt.Errorf("update channel: %w", translateError(err))
 	}
 	if rows == 0 {
-		return fmt.Errorf("update channel: %w", model.ErrNotFound)
+		return fmt.Errorf("update channel: %w", ErrNotFound)
 	}
 	return nil
 }
@@ -88,7 +88,7 @@ func (r *ChannelRepository) Delete(ctx context.Context, id uuid.UUID) error {
 		return fmt.Errorf("delete channel: %w", translateError(err))
 	}
 	if rows == 0 {
-		return fmt.Errorf("delete channel: %w", model.ErrNotFound)
+		return fmt.Errorf("delete channel: %w", ErrNotFound)
 	}
 	return nil
 }
@@ -152,7 +152,7 @@ func (r *ChannelRepository) SetAvailable(ctx context.Context, id uuid.UUID, avai
 		return fmt.Errorf("set channel available: %w", translateError(err))
 	}
 	if rows == 0 {
-		return fmt.Errorf("set channel available: %w", model.ErrNotFound)
+		return fmt.Errorf("set channel available: %w", ErrNotFound)
 	}
 	return nil
 }

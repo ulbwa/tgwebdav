@@ -156,7 +156,7 @@ func TestBotChannelRepository_GetNotFound(t *testing.T) {
 	ctx := context.Background()
 	repo := NewBotChannelRepository(pool)
 
-	if _, err := repo.Get(ctx, uuid.New(), uuid.New()); !errors.Is(err, model.ErrNotFound) {
+	if _, err := repo.Get(ctx, uuid.New(), uuid.New()); !errors.Is(err, ErrNotFound) {
 		t.Fatalf("Get missing = %v, want ErrNotFound", err)
 	}
 

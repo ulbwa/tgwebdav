@@ -161,7 +161,7 @@ func (r *BotRepository) Update(ctx context.Context, b *model.Bot) error {
 		return fmt.Errorf("update bot: %w", translateError(err))
 	}
 	if rows == 0 {
-		return fmt.Errorf("update bot: %w", model.ErrNotFound)
+		return fmt.Errorf("update bot: %w", ErrNotFound)
 	}
 	return nil
 }
@@ -174,7 +174,7 @@ func (r *BotRepository) Delete(ctx context.Context, id uuid.UUID) error {
 		return fmt.Errorf("delete bot: %w", translateError(err))
 	}
 	if rows == 0 {
-		return fmt.Errorf("delete bot: %w", model.ErrNotFound)
+		return fmt.Errorf("delete bot: %w", ErrNotFound)
 	}
 	return nil
 }
@@ -228,7 +228,7 @@ func (r *BotRepository) SetUnavailableUntil(ctx context.Context, id uuid.UUID, u
 		return fmt.Errorf("set bot unavailable: %w", translateError(err))
 	}
 	if rows == 0 {
-		return fmt.Errorf("set bot unavailable: %w", model.ErrNotFound)
+		return fmt.Errorf("set bot unavailable: %w", ErrNotFound)
 	}
 	return nil
 }

@@ -10,7 +10,9 @@ import (
 
 	"github.com/google/uuid"
 
+	"github.com/ulbwa/tgwebdav/internal/client/telegram"
 	"github.com/ulbwa/tgwebdav/internal/model"
+	"github.com/ulbwa/tgwebdav/internal/repository"
 )
 
 // ---- tiny dependency interfaces (Rule 5) -----------------------------------
@@ -64,8 +66,8 @@ type readerExtentStore interface {
 }
 
 // readerTelegram is the slice of the Telegram Bot API the reader needs. It
-// returns model.TGSendResult and the typed errors *model.RateLimitError,
-// model.ErrTelegramNotFound and model.ErrTelegramForbidden.
+// returns model.TGSendResult and the typed errors *telegram.RateLimitError,
+// telegram.ErrTelegramNotFound and telegram.ErrTelegramForbidden.
 type readerTelegram interface {
 	DownloadFile(ctx context.Context, bot *model.Bot, fileID string) ([]byte, error)
 	SendByFileID(ctx context.Context, bot *model.Bot, chatID int64, fileID string) (model.TGSendResult, error)
@@ -230,7 +232,7 @@ type candidate struct {
 
 // ReadBlob resolves the full bytes of the blob identified by blobID.
 //
-// The blob must be in a readable state; otherwise model.ErrBlobUnavailable is
+// The blob must be in a readable state; otherwise ErrBlobUnavailable is
 // returned. A cache hit short-circuits everything. On a miss the reader builds
 // an ordered list of candidate bots — first any bot that already has a cached
 // file_id for this blob, then the remaining enabled+available member bots of
@@ -243,14 +245,14 @@ type candidate struct {
 //   - Forward-recovery forwards the blob's message within its channel to mint a
 //     fresh file_id, downloads it, best-effort deletes the forwarded copy and
 //     caches the new file_id.
-//   - A *model.RateLimitError parks the bot (SetUnavailableUntil) and moves on.
-//   - model.ErrTelegramForbidden records the bot as a non-member and moves on.
+//   - A *telegram.RateLimitError parks the bot (SetUnavailableUntil) and moves on.
+//   - telegram.ErrTelegramForbidden records the bot as a non-member and moves on.
 //
-// Only when forward-recovery itself returns model.ErrTelegramNotFound do we
+// Only when forward-recovery itself returns telegram.ErrTelegramNotFound do we
 // conclude the underlying message is permanently gone: the blob is marked
 // perm_unavailable and every node that referenced solely this blob is
 // cascade-deleted, inside a single transaction, with EventBlobPermDeleted and
-// EventCascadeDelete logged. model.ErrBlobUnavailable is then returned.
+// EventCascadeDelete logged. ErrBlobUnavailable is then returned.
 //
 // On success the bytes are cached, read-byte stats recorded, and the bytes
 // returned.
@@ -260,7 +262,7 @@ func (r *BlobReader) ReadBlob(ctx context.Context, blobID uuid.UUID) ([]byte, er
 		return nil, fmt.Errorf("blob: get blob %s: %w", blobID, err)
 	}
 	if !blob.State.Readable() {
-		return nil, fmt.Errorf("blob %s in state %s: %w", blobID, blob.State, model.ErrBlobUnavailable)
+		return nil, fmt.Errorf("blob %s in state %s: %w", blobID, blob.State, ErrBlobUnavailable)
 	}
 
 	// Cache hit short-circuits all network work.
@@ -280,7 +282,7 @@ func (r *BlobReader) ReadBlob(ctx context.Context, blobID uuid.UUID) ([]byte, er
 		return nil, err
 	}
 	if len(candidates) == 0 {
-		return nil, fmt.Errorf("blob %s: no member bot: %w", blobID, model.ErrBlobUnavailable)
+		return nil, fmt.Errorf("blob %s: no member bot: %w", blobID, ErrBlobUnavailable)
 	}
 
 	// permGone records whether any candidate proved (via forward-recovery) that
@@ -317,10 +319,10 @@ func (r *BlobReader) ReadBlob(ctx context.Context, blobID uuid.UUID) ([]byte, er
 	// message is permanently gone.
 	if permGone {
 		r.markPermUnavailable(ctx, blob)
-		return nil, fmt.Errorf("blob %s message gone: %w", blobID, model.ErrBlobUnavailable)
+		return nil, fmt.Errorf("blob %s message gone: %w", blobID, ErrBlobUnavailable)
 	}
 
-	return nil, fmt.Errorf("blob %s: no usable bot: %w", blobID, model.ErrBlobUnavailable)
+	return nil, fmt.Errorf("blob %s: no usable bot: %w", blobID, ErrBlobUnavailable)
 }
 
 // candidates builds the ordered candidate list: bots with a cached file_id for
@@ -344,7 +346,7 @@ func (r *BlobReader) candidates(ctx context.Context, blob *model.Blob) ([]candid
 		}
 		bot, err := r.bots.GetByID(ctx, bc.BotID)
 		if err != nil {
-			if errors.Is(err, model.ErrNotFound) {
+			if errors.Is(err, repository.ErrNotFound) {
 				continue
 			}
 			return nil, fmt.Errorf("blob: get bot %s: %w", bc.BotID, err)
@@ -408,7 +410,7 @@ func (r *BlobReader) tryCandidate(
 		switch {
 		case err == nil:
 			return data, false, nil
-		case errors.Is(err, model.ErrTelegramNotFound):
+		case errors.Is(err, telegram.ErrTelegramNotFound):
 			// STALE cached file_id: drop just this row and fall through to
 			// recovery. Do NOT perm-delete the blob on this signal.
 			r.logger.InfoContext(ctx, "blob: cached file_id stale, recovering",
@@ -419,7 +421,7 @@ func (r *BlobReader) tryCandidate(
 		case isRateLimit(err):
 			r.parkBot(ctx, c.bot, err)
 			return nil, false, err
-		case errors.Is(err, model.ErrTelegramForbidden):
+		case errors.Is(err, telegram.ErrTelegramForbidden):
 			r.recordNonMember(ctx, c.bot, channel)
 			return nil, false, err
 		default:
@@ -435,13 +437,13 @@ func (r *BlobReader) tryCandidate(
 	switch {
 	case err == nil:
 		// proceed to download
-	case errors.Is(err, model.ErrTelegramNotFound):
+	case errors.Is(err, telegram.ErrTelegramNotFound):
 		// The message itself is gone — definitive.
 		return nil, true, err
 	case isRateLimit(err):
 		r.parkBot(ctx, c.bot, err)
 		return nil, false, err
-	case errors.Is(err, model.ErrTelegramForbidden):
+	case errors.Is(err, telegram.ErrTelegramForbidden):
 		r.recordNonMember(ctx, c.bot, channel)
 		return nil, false, err
 	default:
@@ -454,14 +456,14 @@ func (r *BlobReader) tryCandidate(
 		// Best-effort cleanup of the forwarded copy even on download failure.
 		r.bestEffortDelete(ctx, c.bot, channel.TGChatID, res.MessageID)
 		switch {
-		case errors.Is(err, model.ErrTelegramNotFound):
+		case errors.Is(err, telegram.ErrTelegramNotFound):
 			// We just forwarded and got a fresh file_id; a not-found here is a
 			// transient/odd state, not proof the original is gone. Try next bot.
 			return nil, false, fmt.Errorf("blob: download recovered file_id: %w", err)
 		case isRateLimit(err):
 			r.parkBot(ctx, c.bot, err)
 			return nil, false, err
-		case errors.Is(err, model.ErrTelegramForbidden):
+		case errors.Is(err, telegram.ErrTelegramForbidden):
 			r.recordNonMember(ctx, c.bot, channel)
 			return nil, false, err
 		default:
@@ -538,7 +540,7 @@ func (r *BlobReader) markPermUnavailable(ctx context.Context, blob *model.Blob) 
 // parkBot records a Telegram rate-limit by marking the bot unavailable until
 // now+RetryAfter and logging an availability event (best-effort).
 func (r *BlobReader) parkBot(ctx context.Context, bot *model.Bot, err error) {
-	var rl *model.RateLimitError
+	var rl *telegram.RateLimitError
 	if !errors.As(err, &rl) {
 		return
 	}
@@ -583,8 +585,8 @@ func (r *BlobReader) bestEffortDelete(ctx context.Context, bot *model.Bot, chatI
 	}
 }
 
-// isRateLimit reports whether err is (or wraps) a *model.RateLimitError.
+// isRateLimit reports whether err is (or wraps) a *telegram.RateLimitError.
 func isRateLimit(err error) bool {
-	var rl *model.RateLimitError
+	var rl *telegram.RateLimitError
 	return errors.As(err, &rl)
 }

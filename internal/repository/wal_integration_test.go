@@ -113,7 +113,7 @@ func TestWALRepository_AppendChunk_DuplicateSeq(t *testing.T) {
 		t.Fatalf("first append: %v", err)
 	}
 	err := repo.AppendChunk(ctx, &model.WALChunk{NodeID: nodeID, Seq: 0, Data: []byte("b")})
-	if !errors.Is(err, model.ErrAlreadyExists) {
+	if !errors.Is(err, ErrAlreadyExists) {
 		t.Fatalf("duplicate seq err = %v, want ErrAlreadyExists", err)
 	}
 }

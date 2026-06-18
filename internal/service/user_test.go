@@ -8,6 +8,7 @@ import (
 	"github.com/google/uuid"
 
 	"github.com/ulbwa/tgwebdav/internal/model"
+	"github.com/ulbwa/tgwebdav/internal/repository"
 )
 
 // fakeUserRepo is an in-memory userRepo keyed by id, with a login uniqueness
@@ -23,7 +24,7 @@ func newFakeUserRepo() *fakeUserRepo {
 func (f *fakeUserRepo) Create(_ context.Context, u *model.User) error {
 	for _, existing := range f.byID {
 		if existing.Login == u.Login {
-			return model.ErrAlreadyExists
+			return repository.ErrAlreadyExists
 		}
 	}
 	cp := *u
@@ -33,7 +34,7 @@ func (f *fakeUserRepo) Create(_ context.Context, u *model.User) error {
 
 func (f *fakeUserRepo) Update(_ context.Context, u *model.User) error {
 	if _, ok := f.byID[u.ID]; !ok {
-		return model.ErrNotFound
+		return repository.ErrNotFound
 	}
 	cp := *u
 	f.byID[u.ID] = &cp
@@ -42,7 +43,7 @@ func (f *fakeUserRepo) Update(_ context.Context, u *model.User) error {
 
 func (f *fakeUserRepo) Delete(_ context.Context, id uuid.UUID) error {
 	if _, ok := f.byID[id]; !ok {
-		return model.ErrNotFound
+		return repository.ErrNotFound
 	}
 	delete(f.byID, id)
 	return nil
@@ -51,7 +52,7 @@ func (f *fakeUserRepo) Delete(_ context.Context, id uuid.UUID) error {
 func (f *fakeUserRepo) GetByID(_ context.Context, id uuid.UUID) (*model.User, error) {
 	u, ok := f.byID[id]
 	if !ok {
-		return nil, model.ErrNotFound
+		return nil, repository.ErrNotFound
 	}
 	cp := *u
 	return &cp, nil
@@ -94,7 +95,7 @@ func (f *fakeTokenRepo) ListByUser(_ context.Context, userID uuid.UUID) ([]model
 
 func (f *fakeTokenRepo) Delete(_ context.Context, id uuid.UUID) error {
 	if _, ok := f.byID[id]; !ok {
-		return model.ErrNotFound
+		return repository.ErrNotFound
 	}
 	delete(f.byID, id)
 	return nil
@@ -162,7 +163,7 @@ func TestUserCreateDuplicateLoginIsAlreadyExists(t *testing.T) {
 		t.Fatalf("first Create: %v", err)
 	}
 	_, err := svc.Create(ctx, CreateUserParams{Login: "bob", Password: "pw2"})
-	if !errors.Is(err, model.ErrAlreadyExists) {
+	if !errors.Is(err, repository.ErrAlreadyExists) {
 		t.Fatalf("duplicate Create: expected ErrAlreadyExists, got %v", err)
 	}
 }
@@ -195,14 +196,14 @@ func TestUserGetListDelete(t *testing.T) {
 	if err := svc.Delete(ctx, u.ID); err != nil {
 		t.Fatalf("Delete: %v", err)
 	}
-	if _, err := svc.Get(ctx, u.ID); !errors.Is(err, model.ErrNotFound) {
+	if _, err := svc.Get(ctx, u.ID); !errors.Is(err, repository.ErrNotFound) {
 		t.Fatalf("Get after delete: expected ErrNotFound, got %v", err)
 	}
 }
 
 func TestUserGetMissingIsNotFound(t *testing.T) {
 	svc, _, _ := newTestUserService()
-	if _, err := svc.Get(context.Background(), uuid.New()); !errors.Is(err, model.ErrNotFound) {
+	if _, err := svc.Get(context.Background(), uuid.New()); !errors.Is(err, repository.ErrNotFound) {
 		t.Fatalf("Get missing: expected ErrNotFound, got %v", err)
 	}
 }
@@ -238,7 +239,7 @@ func TestUserSetPasswordRehashesAndUpdates(t *testing.T) {
 
 func TestUserSetPasswordMissingIsNotFound(t *testing.T) {
 	svc, _, _ := newTestUserService()
-	if err := svc.SetPassword(context.Background(), uuid.New(), "x"); !errors.Is(err, model.ErrNotFound) {
+	if err := svc.SetPassword(context.Background(), uuid.New(), "x"); !errors.Is(err, repository.ErrNotFound) {
 		t.Fatalf("SetPassword missing: expected ErrNotFound, got %v", err)
 	}
 }
@@ -281,7 +282,7 @@ func TestUserCreateTokenReturnsPlaintextAndStoresHash(t *testing.T) {
 
 func TestUserCreateTokenMissingUserIsNotFound(t *testing.T) {
 	svc, _, _ := newTestUserService()
-	if _, _, err := svc.CreateToken(context.Background(), uuid.New(), "x"); !errors.Is(err, model.ErrNotFound) {
+	if _, _, err := svc.CreateToken(context.Background(), uuid.New(), "x"); !errors.Is(err, repository.ErrNotFound) {
 		t.Fatalf("CreateToken missing user: expected ErrNotFound, got %v", err)
 	}
 }
@@ -324,7 +325,7 @@ func TestUserListAndDeleteTokens(t *testing.T) {
 
 func TestUserListTokensMissingUserIsNotFound(t *testing.T) {
 	svc, _, _ := newTestUserService()
-	if _, err := svc.ListTokens(context.Background(), uuid.New()); !errors.Is(err, model.ErrNotFound) {
+	if _, err := svc.ListTokens(context.Background(), uuid.New()); !errors.Is(err, repository.ErrNotFound) {
 		t.Fatalf("ListTokens missing user: expected ErrNotFound, got %v", err)
 	}
 }
@@ -348,7 +349,7 @@ func TestUserDeleteTokenWrongOwnerIsNotFound(t *testing.T) {
 	}
 
 	// Deleting owner's token under the wrong user must 404 and leave it intact.
-	if err := svc.DeleteToken(ctx, other.ID, tok.ID); !errors.Is(err, model.ErrNotFound) {
+	if err := svc.DeleteToken(ctx, other.ID, tok.ID); !errors.Is(err, repository.ErrNotFound) {
 		t.Fatalf("DeleteToken wrong owner: expected ErrNotFound, got %v", err)
 	}
 	list, err := svc.ListTokens(ctx, owner.ID)

@@ -54,7 +54,7 @@ func BasicAuth(auth basicAuthenticator) func(http.Handler) http.Handler {
 			principal, err := auth.AuthenticateBasic(r.Context(), username, password)
 			if err != nil {
 				switch {
-				case errors.Is(err, model.ErrForbidden):
+				case errors.Is(err, service.ErrForbidden):
 					http.Error(w, "forbidden", http.StatusForbidden)
 				default:
 					webdavUnauthorized(w)
@@ -86,7 +86,7 @@ func AdminAuth(auth adminAuthenticator) func(http.Handler) http.Handler {
 		return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 			user, err := authenticateAdmin(r, auth)
 			if err != nil {
-				if errors.Is(err, model.ErrForbidden) {
+				if errors.Is(err, service.ErrForbidden) {
 					writeJSONError(w, http.StatusForbidden, "administrator privileges required")
 					return
 				}
@@ -103,18 +103,18 @@ func AdminAuth(auth adminAuthenticator) func(http.Handler) http.Handler {
 // authenticateAdmin resolves the request to an administrator user. It accepts a
 // Bearer token whose owner is an is_admin user, or HTTP Basic credentials that
 // resolve to an is_admin user (with no impersonation). It returns
-// model.ErrForbidden when the principal authenticated but is not an admin, and
-// model.ErrUnauthorized otherwise.
+// service.ErrForbidden when the principal authenticated but is not an admin, and
+// service.ErrUnauthorized otherwise.
 func authenticateAdmin(r *http.Request, auth adminAuthenticator) (*model.User, error) {
 	authz := r.Header.Get("Authorization")
 
 	if token, ok := bearerToken(authz); ok {
 		user, err := auth.AuthenticateBearer(r.Context(), token)
 		if err != nil {
-			return nil, model.ErrUnauthorized
+			return nil, service.ErrUnauthorized
 		}
 		if !user.IsAdmin {
-			return nil, model.ErrForbidden
+			return nil, service.ErrForbidden
 		}
 		return user, nil
 	}
@@ -124,18 +124,18 @@ func authenticateAdmin(r *http.Request, auth adminAuthenticator) (*model.User, e
 		if err != nil {
 			// AuthenticateBasic returns ErrForbidden for non-admin impersonation;
 			// any other failure is treated as unauthorized.
-			if errors.Is(err, model.ErrForbidden) {
-				return nil, model.ErrForbidden
+			if errors.Is(err, service.ErrForbidden) {
+				return nil, service.ErrForbidden
 			}
-			return nil, model.ErrUnauthorized
+			return nil, service.ErrUnauthorized
 		}
 		if !principal.IsAdmin() {
-			return nil, model.ErrForbidden
+			return nil, service.ErrForbidden
 		}
 		return principal.Auth, nil
 	}
 
-	return nil, model.ErrUnauthorized
+	return nil, service.ErrUnauthorized
 }
 
 // bearerToken extracts the token from an "Authorization: Bearer <token>" header.

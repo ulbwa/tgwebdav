@@ -459,7 +459,7 @@ func (w *writeFile) Close() error {
 				return err
 			}
 			if used+w.size > w.user.QuotaBytes {
-				return model.ErrQuotaExceeded
+				return ErrQuotaExceeded
 			}
 		}
 		n, err := w.fs.nodes.GetByID(ctx, w.node.ID)

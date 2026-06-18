@@ -81,7 +81,7 @@ func TestBotRepository_EncryptionIsRandomized(t *testing.T) {
 	}
 	// token_sha is UNIQUE, so the duplicate token must collide.
 	err := repo.Create(ctx, b2)
-	if !errors.Is(err, model.ErrAlreadyExists) {
+	if !errors.Is(err, ErrAlreadyExists) {
 		t.Fatalf("Create duplicate token error = %v, want ErrAlreadyExists", err)
 	}
 }
@@ -204,20 +204,20 @@ func TestBotRepository_NotFound(t *testing.T) {
 	repo := NewBotRepository(pool, testSecretKey())
 
 	missing := uuid.New()
-	if _, err := repo.GetByID(ctx, missing); !errors.Is(err, model.ErrNotFound) {
+	if _, err := repo.GetByID(ctx, missing); !errors.Is(err, ErrNotFound) {
 		t.Fatalf("GetByID missing = %v, want ErrNotFound", err)
 	}
-	if _, err := repo.GetByUsername(ctx, "nope"); !errors.Is(err, model.ErrNotFound) {
+	if _, err := repo.GetByUsername(ctx, "nope"); !errors.Is(err, ErrNotFound) {
 		t.Fatalf("GetByUsername missing = %v, want ErrNotFound", err)
 	}
-	if err := repo.Delete(ctx, missing); !errors.Is(err, model.ErrNotFound) {
+	if err := repo.Delete(ctx, missing); !errors.Is(err, ErrNotFound) {
 		t.Fatalf("Delete missing = %v, want ErrNotFound", err)
 	}
-	if err := repo.SetUnavailableUntil(ctx, missing, nil); !errors.Is(err, model.ErrNotFound) {
+	if err := repo.SetUnavailableUntil(ctx, missing, nil); !errors.Is(err, ErrNotFound) {
 		t.Fatalf("SetUnavailableUntil missing = %v, want ErrNotFound", err)
 	}
 	upd := &model.Bot{ID: missing, Username: "x", Token: "t"}
-	if err := repo.Update(ctx, upd); !errors.Is(err, model.ErrNotFound) {
+	if err := repo.Update(ctx, upd); !errors.Is(err, ErrNotFound) {
 		t.Fatalf("Update missing = %v, want ErrNotFound", err)
 	}
 }
@@ -234,7 +234,7 @@ func TestBotRepository_Delete(t *testing.T) {
 	if err := repo.Delete(ctx, b.ID); err != nil {
 		t.Fatalf("Delete: %v", err)
 	}
-	if _, err := repo.GetByID(ctx, b.ID); !errors.Is(err, model.ErrNotFound) {
+	if _, err := repo.GetByID(ctx, b.ID); !errors.Is(err, ErrNotFound) {
 		t.Fatalf("GetByID after delete = %v, want ErrNotFound", err)
 	}
 }

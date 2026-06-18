@@ -71,7 +71,7 @@ func TestChannelRepository_CRUD(t *testing.T) {
 	if err := repo.Delete(ctx, c.ID); err != nil {
 		t.Fatalf("Delete: %v", err)
 	}
-	if _, err := repo.GetByID(ctx, c.ID); !errors.Is(err, model.ErrNotFound) {
+	if _, err := repo.GetByID(ctx, c.ID); !errors.Is(err, ErrNotFound) {
 		t.Fatalf("GetByID after delete = %v, want ErrNotFound", err)
 	}
 }
@@ -112,7 +112,7 @@ func TestChannelRepository_DuplicateChatID(t *testing.T) {
 		t.Fatalf("Create first: %v", err)
 	}
 	err := repo.Create(ctx, newChannel(-100999, "second"))
-	if !errors.Is(err, model.ErrAlreadyExists) {
+	if !errors.Is(err, ErrAlreadyExists) {
 		t.Fatalf("duplicate tg_chat_id = %v, want ErrAlreadyExists", err)
 	}
 }
@@ -197,25 +197,25 @@ func TestChannelRepository_NotFound(t *testing.T) {
 	repo := NewChannelRepository(pool)
 
 	missing := uuid.New()
-	if _, err := repo.GetByID(ctx, missing); !errors.Is(err, model.ErrNotFound) {
+	if _, err := repo.GetByID(ctx, missing); !errors.Is(err, ErrNotFound) {
 		t.Fatalf("GetByID missing = %v, want ErrNotFound", err)
 	}
-	if _, err := repo.GetByChatID(ctx, -100000); !errors.Is(err, model.ErrNotFound) {
+	if _, err := repo.GetByChatID(ctx, -100000); !errors.Is(err, ErrNotFound) {
 		t.Fatalf("GetByChatID missing = %v, want ErrNotFound", err)
 	}
-	if err := repo.Delete(ctx, missing); !errors.Is(err, model.ErrNotFound) {
+	if err := repo.Delete(ctx, missing); !errors.Is(err, ErrNotFound) {
 		t.Fatalf("Delete missing = %v, want ErrNotFound", err)
 	}
-	if err := repo.SetAvailable(ctx, missing, true); !errors.Is(err, model.ErrNotFound) {
+	if err := repo.SetAvailable(ctx, missing, true); !errors.Is(err, ErrNotFound) {
 		t.Fatalf("SetAvailable missing = %v, want ErrNotFound", err)
 	}
 	upd := newChannel(-100123, "x")
 	upd.ID = missing
-	if err := repo.Update(ctx, upd); !errors.Is(err, model.ErrNotFound) {
+	if err := repo.Update(ctx, upd); !errors.Is(err, ErrNotFound) {
 		t.Fatalf("Update missing = %v, want ErrNotFound", err)
 	}
 	// IncrementCounter on a missing row hits no row → pgx.ErrNoRows → ErrNotFound.
-	if _, err := repo.IncrementCounter(ctx, missing, 1); !errors.Is(err, model.ErrNotFound) {
+	if _, err := repo.IncrementCounter(ctx, missing, 1); !errors.Is(err, ErrNotFound) {
 		t.Fatalf("IncrementCounter missing = %v, want ErrNotFound", err)
 	}
 }

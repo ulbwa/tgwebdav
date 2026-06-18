@@ -1,7 +1,4 @@
-APP    := tgwebdav
-MODULE := $(shell go list -m)
-VERSION := $(shell git describe --tags --always --dirty 2>/dev/null || echo dev)
-LDFLAGS := -ldflags "-X $(MODULE)/internal/version.Version=$(VERSION)"
+APP := tgwebdav
 
 PLATFORMS := \
 	linux/amd64 \
@@ -20,7 +17,7 @@ build:
 		$(eval OS   := $(word 1,$(subst /, ,$(platform)))) \
 		$(eval ARCH := $(word 2,$(subst /, ,$(platform)))) \
 		$(eval EXT  := $(if $(filter windows,$(OS)),.exe,)) \
-		GOOS=$(OS) GOARCH=$(ARCH) go build $(LDFLAGS) \
+		GOOS=$(OS) GOARCH=$(ARCH) go build \
 			-o dist/$(APP)-$(OS)-$(ARCH)$(EXT) \
 			./cmd/tgwebdav; \
 	)

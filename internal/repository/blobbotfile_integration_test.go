@@ -126,10 +126,10 @@ func TestBlobBotFileRepository_ListAndDelete(t *testing.T) {
 	if err := repo.DeleteByBot(ctx, bot1); err != nil {
 		t.Fatalf("DeleteByBot: %v", err)
 	}
-	if _, err := repo.Get(ctx, blob1, bot1); !errors.Is(err, model.ErrNotFound) {
+	if _, err := repo.Get(ctx, blob1, bot1); !errors.Is(err, ErrNotFound) {
 		t.Fatalf("Get blob1/bot1 after DeleteByBot = %v, want ErrNotFound", err)
 	}
-	if _, err := repo.Get(ctx, blob2, bot1); !errors.Is(err, model.ErrNotFound) {
+	if _, err := repo.Get(ctx, blob2, bot1); !errors.Is(err, ErrNotFound) {
 		t.Fatalf("Get blob2/bot1 after DeleteByBot = %v, want ErrNotFound", err)
 	}
 	// blob1/bot2 must survive.
@@ -155,7 +155,7 @@ func TestBlobBotFileRepository_GetNotFound(t *testing.T) {
 	ctx := context.Background()
 	repo := NewBlobBotFileRepository(pool)
 
-	if _, err := repo.Get(ctx, uuid.New(), uuid.New()); !errors.Is(err, model.ErrNotFound) {
+	if _, err := repo.Get(ctx, uuid.New(), uuid.New()); !errors.Is(err, ErrNotFound) {
 		t.Fatalf("Get missing = %v, want ErrNotFound", err)
 	}
 	// DeleteBy* on absent rows is a no-op (no error).

@@ -12,6 +12,7 @@ import (
 	"github.com/google/uuid"
 
 	"github.com/ulbwa/tgwebdav/internal/model"
+	"github.com/ulbwa/tgwebdav/internal/repository"
 )
 
 // --- shared in-memory store backing the packer fakes -----------------------
@@ -139,7 +140,7 @@ func (f *pkBlobs) AddRefcount(_ context.Context, id uuid.UUID, delta int64) erro
 			return nil
 		}
 	}
-	return model.ErrNotFound
+	return repository.ErrNotFound
 }
 
 type pkBlobFiles struct{}
@@ -224,7 +225,7 @@ type fakeChanSvc struct {
 
 func (f *fakeChanSvc) PickForUpload(context.Context) (*model.Channel, error) {
 	if len(f.chans) == 0 {
-		return nil, model.ErrNoBot
+		return nil, ErrNoBot
 	}
 	i := int(f.n.Add(1)-1) % len(f.chans)
 	c := f.chans[i]

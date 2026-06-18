@@ -1,11 +1,7 @@
-// Package config resolves runtime configuration from command-line flags
-// (registered on a cobra command via AddFlags) and environment variables
-// (bound with viper, prefixed TGWEBDAV_), with an optional .env file loaded into
-// the process environment beforehand. Only bootstrap-level settings live here;
-// everything tunable at runtime is stored in the database.
-package config
+package main
 
 import (
+	"bufio"
 	"crypto/sha256"
 	"fmt"
 	"os"
@@ -13,7 +9,7 @@ import (
 	"strconv"
 	"strings"
 
-	"github.com/spf13/pflag"
+	"github.com/spf13/cobra"
 	"github.com/spf13/viper"
 )
 
@@ -21,8 +17,10 @@ import (
 // "dsn" key maps to TGWEBDAV_DSN.
 const envPrefix = "TGWEBDAV"
 
-// Config is the fully-resolved bootstrap configuration.
-type Config struct {
+// serverConfig is the fully-resolved bootstrap configuration for the server
+// command. Only bootstrap-level settings live here; everything tunable at
+// runtime is stored in the database.
+type serverConfig struct {
 	DSN        string // PostgreSQL connection string
 	WebDAVAddr string // WebDAV listen address
 	MgmtAddr   string // Management API listen address
@@ -39,43 +37,79 @@ type Config struct {
 	LogLevel string // debug|info|warn|error
 }
 
-// AddFlags registers the command-line flags on fs (a cobra command's flag set).
-// Defaults are static; the precedence flag > env > default is applied by Resolve
-// through viper.
-func AddFlags(fs *pflag.FlagSet) {
-	fs.String("dsn", "", "PostgreSQL DSN (env TGWEBDAV_DSN)")
-	fs.String("webdav-addr", ":8080", "WebDAV listen address (env TGWEBDAV_WEBDAV_ADDR)")
-	fs.String("mgmt-addr", ":8081", "Management API listen address (env TGWEBDAV_MGMT_ADDR)")
-	fs.String("cache-dir", "", "blob cache directory; default user cache dir (env TGWEBDAV_CACHE_DIR)")
-	fs.String("cache-size", "1GiB", "blob cache size, e.g. 512MiB, 2GiB (env TGWEBDAV_CACHE_SIZE)")
-	fs.String("first-user", "", "bootstrap admin as login:password (env TGWEBDAV_FIRST_USER)")
-	fs.String("log-level", "info", "log level: debug|info|warn|error (env TGWEBDAV_LOG_LEVEL)")
-	fs.String("env-file", ".env", ".env file to load before resolving configuration")
-}
-
-// LoadDotenv loads KEY=VALUE pairs from path into the process environment
-// (without overriding already-set variables) so viper's AutomaticEnv picks them
-// up. A missing file is not an error.
-func LoadDotenv(path string) {
-	_ = loadDotenv(path)
-}
-
-// Resolve builds the Config from flags, environment variables (bound via viper)
-// and defaults, then validates it. Call LoadDotenv first if a .env file is used.
-func Resolve(fs *pflag.FlagSet) (*Config, error) {
+// newViper builds a viper instance bound to a cobra command's flags and the
+// TGWEBDAV-prefixed environment (with "-" → "_" in keys). It is the single place
+// viper/os.Getenv touch the environment for this command tree.
+func newViper(cmd *cobra.Command) (*viper.Viper, error) {
 	v := viper.New()
 	v.SetEnvPrefix(envPrefix)
 	v.SetEnvKeyReplacer(strings.NewReplacer("-", "_"))
 	v.AutomaticEnv()
-	if err := v.BindPFlags(fs); err != nil {
+	// Bind both persistent (root) and local (command) flags so each command
+	// resolves precedence flag > env > default uniformly.
+	if err := v.BindPFlags(cmd.Flags()); err != nil {
 		return nil, fmt.Errorf("bind flags: %w", err)
+	}
+	return v, nil
+}
+
+// loadDotenv loads KEY=VALUE pairs from path into the process environment
+// without overriding variables that are already set, so viper's AutomaticEnv
+// picks them up. Lines that are blank or start with '#' are ignored. Values may
+// be optionally single- or double-quoted. A missing file is not an error.
+func loadDotenv(path string) error {
+	f, err := os.Open(path)
+	if err != nil {
+		return nil // optional file
+	}
+	defer func() { _ = f.Close() }()
+
+	sc := bufio.NewScanner(f)
+	sc.Buffer(make([]byte, 0, 64*1024), 1024*1024)
+	for sc.Scan() {
+		line := strings.TrimSpace(sc.Text())
+		if line == "" || strings.HasPrefix(line, "#") {
+			continue
+		}
+		line = strings.TrimPrefix(line, "export ")
+		key, val, ok := strings.Cut(line, "=")
+		if !ok {
+			continue
+		}
+		key = strings.TrimSpace(key)
+		val = strings.TrimSpace(val)
+		if len(val) >= 2 {
+			if (val[0] == '"' && val[len(val)-1] == '"') || (val[0] == '\'' && val[len(val)-1] == '\'') {
+				val = val[1 : len(val)-1]
+			}
+		}
+		if key == "" {
+			continue
+		}
+		if _, exists := os.LookupEnv(key); !exists {
+			_ = os.Setenv(key, val)
+		}
+	}
+	return sc.Err()
+}
+
+// loadServerConfig resolves the server command's full configuration from flags,
+// environment variables (bound via viper) and defaults, then validates it. The
+// optional .env file named by --env-file is loaded into the environment first.
+func loadServerConfig(cmd *cobra.Command) (*serverConfig, error) {
+	envFile, _ := cmd.Flags().GetString("env-file")
+	_ = loadDotenv(envFile)
+
+	v, err := newViper(cmd)
+	if err != nil {
+		return nil, err
 	}
 	// Secret material has no flag (env-only); bind it explicitly.
 	for _, k := range []string{"secret-key", "bot-tokens", "channel-ids"} {
 		_ = v.BindEnv(k)
 	}
 
-	cfg := &Config{
+	cfg := &serverConfig{
 		DSN:        v.GetString("dsn"),
 		WebDAVAddr: v.GetString("webdav-addr"),
 		MgmtAddr:   v.GetString("mgmt-addr"),
@@ -89,7 +123,7 @@ func Resolve(fs *pflag.FlagSet) (*Config, error) {
 		return nil, fmt.Errorf("DSN is required (--dsn or TGWEBDAV_DSN)")
 	}
 
-	size, err := ParseSize(v.GetString("cache-size"))
+	size, err := parseSize(v.GetString("cache-size"))
 	if err != nil {
 		return nil, fmt.Errorf("invalid cache-size: %w", err)
 	}
@@ -125,8 +159,27 @@ func Resolve(fs *pflag.FlagSet) (*Config, error) {
 	return cfg, nil
 }
 
-// FirstUserParts splits FirstUser into login and password (empty if unset).
-func (c *Config) FirstUserParts() (login, password string, ok bool) {
+// loadMigrateConfig resolves only what the migrate command needs: the DSN. It
+// loads the optional .env file named by --env-file first, then reads --dsn /
+// TGWEBDAV_DSN. It deliberately does not touch webdav/cache/bot configuration.
+func loadMigrateConfig(cmd *cobra.Command) (dsn string, err error) {
+	envFile, _ := cmd.Flags().GetString("env-file")
+	_ = loadDotenv(envFile)
+
+	v, err := newViper(cmd)
+	if err != nil {
+		return "", err
+	}
+	dsn = v.GetString("dsn")
+	if dsn == "" {
+		return "", fmt.Errorf("DSN is required (--dsn or TGWEBDAV_DSN)")
+	}
+	return dsn, nil
+}
+
+// firstUserParts splits the configured FirstUser into login and password
+// (returning ok=false when unset or malformed).
+func (c *serverConfig) firstUserParts() (login, password string, ok bool) {
 	if c.FirstUser == "" {
 		return "", "", false
 	}
@@ -144,9 +197,9 @@ func splitNonEmpty(s string) []string {
 	return out
 }
 
-// ParseSize parses a human byte size such as "512", "512MiB", "2GiB", "1gb".
+// parseSize parses a human byte size such as "512", "512MiB", "2GiB", "1gb".
 // Binary (Ki/Mi/Gi) and decimal (k/m/g) suffixes are accepted.
-func ParseSize(s string) (int64, error) {
+func parseSize(s string) (int64, error) {
 	s = strings.TrimSpace(s)
 	if s == "" {
 		return 0, fmt.Errorf("empty size")

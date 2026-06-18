@@ -16,6 +16,7 @@ import (
 
 	canonhttp "github.com/ulbwa/tgwebdav/internal/handler/http"
 	"github.com/ulbwa/tgwebdav/internal/model"
+	"github.com/ulbwa/tgwebdav/internal/repository"
 	"github.com/ulbwa/tgwebdav/internal/service"
 )
 
@@ -34,7 +35,7 @@ func newMemUserStore() *memUserStore {
 func (s *memUserStore) Create(_ context.Context, u *model.User) error {
 	for _, e := range s.byID {
 		if e.Login == u.Login {
-			return model.ErrAlreadyExists
+			return repository.ErrAlreadyExists
 		}
 	}
 	cp := *u
@@ -44,7 +45,7 @@ func (s *memUserStore) Create(_ context.Context, u *model.User) error {
 
 func (s *memUserStore) Update(_ context.Context, u *model.User) error {
 	if _, ok := s.byID[u.ID]; !ok {
-		return model.ErrNotFound
+		return repository.ErrNotFound
 	}
 	cp := *u
 	s.byID[u.ID] = &cp
@@ -53,7 +54,7 @@ func (s *memUserStore) Update(_ context.Context, u *model.User) error {
 
 func (s *memUserStore) Delete(_ context.Context, id uuid.UUID) error {
 	if _, ok := s.byID[id]; !ok {
-		return model.ErrNotFound
+		return repository.ErrNotFound
 	}
 	delete(s.byID, id)
 	return nil
@@ -62,7 +63,7 @@ func (s *memUserStore) Delete(_ context.Context, id uuid.UUID) error {
 func (s *memUserStore) GetByID(_ context.Context, id uuid.UUID) (*model.User, error) {
 	u, ok := s.byID[id]
 	if !ok {
-		return nil, model.ErrNotFound
+		return nil, repository.ErrNotFound
 	}
 	cp := *u
 	return &cp, nil
@@ -75,7 +76,7 @@ func (s *memUserStore) GetByLogin(_ context.Context, login string) (*model.User,
 			return &cp, nil
 		}
 	}
-	return nil, model.ErrNotFound
+	return nil, repository.ErrNotFound
 }
 
 func (s *memUserStore) List(_ context.Context) ([]model.User, error) {
@@ -113,7 +114,7 @@ func (s *memTokenStore) ListByUser(_ context.Context, userID uuid.UUID) ([]model
 
 func (s *memTokenStore) Delete(_ context.Context, id uuid.UUID) error {
 	if _, ok := s.byID[id]; !ok {
-		return model.ErrNotFound
+		return repository.ErrNotFound
 	}
 	delete(s.byID, id)
 	return nil
@@ -126,7 +127,7 @@ func (s *memTokenStore) GetByHash(_ context.Context, hash string) (*model.APITok
 			return &cp, nil
 		}
 	}
-	return nil, model.ErrNotFound
+	return nil, repository.ErrNotFound
 }
 
 func (s *memTokenStore) TouchLastUsed(_ context.Context, id uuid.UUID, at time.Time) error {
@@ -198,7 +199,7 @@ func (m *memStatStore) Latest(_ context.Context, metric, label string) (*model.S
 			return &cp, nil
 		}
 	}
-	return nil, model.ErrNotFound
+	return nil, repository.ErrNotFound
 }
 
 // ---- test harness ----------------------------------------------------------

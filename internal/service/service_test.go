@@ -11,6 +11,7 @@ import (
 	"github.com/google/uuid"
 
 	"github.com/ulbwa/tgwebdav/internal/model"
+	"github.com/ulbwa/tgwebdav/internal/repository"
 )
 
 // testLogger returns a logger that discards output.
@@ -53,7 +54,7 @@ func (r *fakeBotRepo) Create(_ context.Context, b *model.Bot) error {
 }
 func (r *fakeBotRepo) Update(_ context.Context, b *model.Bot) error {
 	if _, ok := r.bots[b.ID]; !ok {
-		return model.ErrNotFound
+		return repository.ErrNotFound
 	}
 	cp := *b
 	r.bots[b.ID] = &cp
@@ -61,7 +62,7 @@ func (r *fakeBotRepo) Update(_ context.Context, b *model.Bot) error {
 }
 func (r *fakeBotRepo) Delete(_ context.Context, id uuid.UUID) error {
 	if _, ok := r.bots[id]; !ok {
-		return model.ErrNotFound
+		return repository.ErrNotFound
 	}
 	delete(r.bots, id)
 	return nil
@@ -69,7 +70,7 @@ func (r *fakeBotRepo) Delete(_ context.Context, id uuid.UUID) error {
 func (r *fakeBotRepo) GetByID(_ context.Context, id uuid.UUID) (*model.Bot, error) {
 	b, ok := r.bots[id]
 	if !ok {
-		return nil, model.ErrNotFound
+		return nil, repository.ErrNotFound
 	}
 	cp := *b
 	return &cp, nil
@@ -81,7 +82,7 @@ func (r *fakeBotRepo) GetByUsername(_ context.Context, username string) (*model.
 			return &cp, nil
 		}
 	}
-	return nil, model.ErrNotFound
+	return nil, repository.ErrNotFound
 }
 func (r *fakeBotRepo) List(_ context.Context) ([]model.Bot, error) {
 	out := make([]model.Bot, 0, len(r.bots))
@@ -118,7 +119,7 @@ func (r *fakeChannelRepo) Create(_ context.Context, c *model.Channel) error {
 }
 func (r *fakeChannelRepo) Update(_ context.Context, c *model.Channel) error {
 	if _, ok := r.channels[c.ID]; !ok {
-		return model.ErrNotFound
+		return repository.ErrNotFound
 	}
 	cp := *c
 	r.channels[c.ID] = &cp
@@ -127,7 +128,7 @@ func (r *fakeChannelRepo) Update(_ context.Context, c *model.Channel) error {
 func (r *fakeChannelRepo) GetByID(_ context.Context, id uuid.UUID) (*model.Channel, error) {
 	c, ok := r.channels[id]
 	if !ok {
-		return nil, model.ErrNotFound
+		return nil, repository.ErrNotFound
 	}
 	cp := *c
 	return &cp, nil
@@ -139,7 +140,7 @@ func (r *fakeChannelRepo) GetByChatID(_ context.Context, chatID int64) (*model.C
 			return &cp, nil
 		}
 	}
-	return nil, model.ErrNotFound
+	return nil, repository.ErrNotFound
 }
 func (r *fakeChannelRepo) List(_ context.Context) ([]model.Channel, error) {
 	out := make([]model.Channel, 0, len(r.channels))
@@ -152,7 +153,7 @@ func (r *fakeChannelRepo) List(_ context.Context) ([]model.Channel, error) {
 func (r *fakeChannelRepo) SetAvailable(_ context.Context, id uuid.UUID, available bool) error {
 	c, ok := r.channels[id]
 	if !ok {
-		return model.ErrNotFound
+		return repository.ErrNotFound
 	}
 	c.Available = available
 	return nil
@@ -188,7 +189,7 @@ func (r *fakeBotChannelRepo) Upsert(_ context.Context, bc *model.BotChannel) err
 func (r *fakeBotChannelRepo) Get(_ context.Context, botID, channelID uuid.UUID) (*model.BotChannel, error) {
 	bc, ok := r.m[botChannelKey{botID, channelID}]
 	if !ok {
-		return nil, model.ErrNotFound
+		return nil, repository.ErrNotFound
 	}
 	cp := *bc
 	return &cp, nil
@@ -440,7 +441,7 @@ func TestBotPickForUploadErrNoBot(t *testing.T) {
 	ctx := context.Background()
 
 	// No bots at all.
-	if _, err := svc.PickForUpload(ctx, channelID); !errors.Is(err, model.ErrNoBot) {
+	if _, err := svc.PickForUpload(ctx, channelID); !errors.Is(err, ErrNoBot) {
 		t.Fatalf("want ErrNoBot, got %v", err)
 	}
 
@@ -448,14 +449,14 @@ func TestBotPickForUploadErrNoBot(t *testing.T) {
 	botID := uuid.New()
 	h.bots.bots[botID] = &model.Bot{ID: botID, Username: "x", Enabled: false}
 	h.bc.m[botChannelKey{botID, channelID}] = &model.BotChannel{BotID: botID, ChannelID: channelID, Member: true}
-	if _, err := svc.PickForUpload(ctx, channelID); !errors.Is(err, model.ErrNoBot) {
+	if _, err := svc.PickForUpload(ctx, channelID); !errors.Is(err, ErrNoBot) {
 		t.Fatalf("disabled bot: want ErrNoBot, got %v", err)
 	}
 
 	// A non-member enabled bot is not eligible.
 	h.bots.bots[botID].Enabled = true
 	h.bc.m[botChannelKey{botID, channelID}].Member = false
-	if _, err := svc.PickForUpload(ctx, channelID); !errors.Is(err, model.ErrNoBot) {
+	if _, err := svc.PickForUpload(ctx, channelID); !errors.Is(err, ErrNoBot) {
 		t.Fatalf("non-member bot: want ErrNoBot, got %v", err)
 	}
 
@@ -463,7 +464,7 @@ func TestBotPickForUploadErrNoBot(t *testing.T) {
 	future := time.Now().Add(time.Hour)
 	h.bc.m[botChannelKey{botID, channelID}].Member = true
 	h.bots.bots[botID].UnavailableUntil = &future
-	if _, err := svc.PickForUpload(ctx, channelID); !errors.Is(err, model.ErrNoBot) {
+	if _, err := svc.PickForUpload(ctx, channelID); !errors.Is(err, ErrNoBot) {
 		t.Fatalf("rate-limited bot: want ErrNoBot, got %v", err)
 	}
 }
@@ -644,7 +645,7 @@ func TestBotRemoveLogsEventAndReevaluates(t *testing.T) {
 func TestBotRemoveNotFound(t *testing.T) {
 	h := newSvcHarness()
 	svc := h.botSvc()
-	if err := svc.Remove(context.Background(), uuid.New()); !errors.Is(err, model.ErrNotFound) {
+	if err := svc.Remove(context.Background(), uuid.New()); !errors.Is(err, repository.ErrNotFound) {
 		t.Fatalf("want ErrNotFound, got %v", err)
 	}
 }
@@ -702,7 +703,7 @@ func TestBotGetAndList(t *testing.T) {
 	ctx := context.Background()
 	svc := h.botSvc()
 
-	if _, err := svc.Get(ctx, uuid.New()); !errors.Is(err, model.ErrNotFound) {
+	if _, err := svc.Get(ctx, uuid.New()); !errors.Is(err, repository.ErrNotFound) {
 		t.Fatalf("Get missing: want ErrNotFound, got %v", err)
 	}
 
@@ -797,7 +798,7 @@ func TestChannelSetEvictionThreshold(t *testing.T) {
 	ctx := context.Background()
 	svc := h.channelSvc()
 
-	if err := svc.SetEvictionThreshold(ctx, uuid.New(), 10); !errors.Is(err, model.ErrNotFound) {
+	if err := svc.SetEvictionThreshold(ctx, uuid.New(), 10); !errors.Is(err, repository.ErrNotFound) {
 		t.Fatalf("missing channel: want ErrNotFound, got %v", err)
 	}
 
@@ -818,7 +819,7 @@ func TestChannelPickForUploadRoundRobinAndErrNoBot(t *testing.T) {
 	svc := h.channelSvc()
 
 	// No channels → ErrNoBot.
-	if _, err := svc.PickForUpload(ctx); !errors.Is(err, model.ErrNoBot) {
+	if _, err := svc.PickForUpload(ctx); !errors.Is(err, ErrNoBot) {
 		t.Fatalf("want ErrNoBot, got %v", err)
 	}
 
@@ -847,7 +848,7 @@ func TestChannelPickForUploadRoundRobinAndErrNoBot(t *testing.T) {
 	// A channel that is unavailable or has no enabled member bot is excluded.
 	h.channels.channels[ch1].Available = false
 	h.bots.bots[botID].Enabled = false // disables ch2's only bot
-	if _, err := svc.PickForUpload(ctx); !errors.Is(err, model.ErrNoBot) {
+	if _, err := svc.PickForUpload(ctx); !errors.Is(err, ErrNoBot) {
 		t.Fatalf("want ErrNoBot when no eligible channel, got %v", err)
 	}
 }
@@ -889,7 +890,7 @@ func TestChannelPickForUploadSkipsRateLimitedOnlyChannel(t *testing.T) {
 	// If chOK's bot also becomes rate-limited, no channel has a usable member bot
 	// even though both channels are still marked available → ErrNoBot.
 	h.bots.bots[usableBot].UnavailableUntil = &future
-	if _, err := svc.PickForUpload(ctx); !errors.Is(err, model.ErrNoBot) {
+	if _, err := svc.PickForUpload(ctx); !errors.Is(err, ErrNoBot) {
 		t.Fatalf("want ErrNoBot when every member bot is rate-limited, got %v", err)
 	}
 }
@@ -900,7 +901,7 @@ func TestChannelGetAndList(t *testing.T) {
 	ctx := context.Background()
 	svc := h.channelSvc()
 
-	if _, err := svc.Get(ctx, uuid.New()); !errors.Is(err, model.ErrNotFound) {
+	if _, err := svc.Get(ctx, uuid.New()); !errors.Is(err, repository.ErrNotFound) {
 		t.Fatalf("Get missing: want ErrNotFound, got %v", err)
 	}
 

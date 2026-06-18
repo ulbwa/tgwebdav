@@ -104,9 +104,9 @@ func TestSendDocumentRateLimited(t *testing.T) {
 	if err == nil {
 		t.Fatal("expected error")
 	}
-	var rl *model.RateLimitError
+	var rl *RateLimitError
 	if !errors.As(err, &rl) {
-		t.Fatalf("error = %v (%T), want *model.RateLimitError", err, err)
+		t.Fatalf("error = %v (%T), want *RateLimitError", err, err)
 	}
 	if rl.RetryAfter != 17*time.Second {
 		t.Errorf("RetryAfter = %s, want 17s", rl.RetryAfter)
@@ -125,7 +125,7 @@ func TestDownloadFileNotFound(t *testing.T) {
 
 	c := newTestClient(t, srv)
 	_, err := c.DownloadFile(context.Background(), testBot(), "STALE_FID")
-	if !errors.Is(err, model.ErrTelegramNotFound) {
+	if !errors.Is(err, ErrTelegramNotFound) {
 		t.Fatalf("error = %v, want ErrTelegramNotFound", err)
 	}
 }
@@ -319,7 +319,7 @@ func TestForbiddenMapping(t *testing.T) {
 
 	c := newTestClient(t, srv)
 	_, err := c.SendByFileID(context.Background(), testBot(), -100222, "FID")
-	if !errors.Is(err, model.ErrTelegramForbidden) {
+	if !errors.Is(err, ErrTelegramForbidden) {
 		t.Fatalf("error = %v, want ErrTelegramForbidden", err)
 	}
 }

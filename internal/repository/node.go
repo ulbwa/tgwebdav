@@ -87,7 +87,7 @@ func (r *NodeRepository) Update(ctx context.Context, n *model.Node) error {
 		return fmt.Errorf("update node: %w", translateError(err))
 	}
 	if rows == 0 {
-		return fmt.Errorf("update node: %w", model.ErrNotFound)
+		return fmt.Errorf("update node: %w", ErrNotFound)
 	}
 	return nil
 }
@@ -100,7 +100,7 @@ func (r *NodeRepository) Delete(ctx context.Context, id uuid.UUID) error {
 		return fmt.Errorf("delete node: %w", translateError(err))
 	}
 	if rows == 0 {
-		return fmt.Errorf("delete node: %w", model.ErrNotFound)
+		return fmt.Errorf("delete node: %w", ErrNotFound)
 	}
 	return nil
 }
@@ -208,7 +208,7 @@ func (r *NodeRepository) ReleaseLease(ctx context.Context, id uuid.UUID) error {
 		return fmt.Errorf("release lease: %w", translateError(err))
 	}
 	if rows == 0 {
-		return fmt.Errorf("release lease: %w", model.ErrNotFound)
+		return fmt.Errorf("release lease: %w", ErrNotFound)
 	}
 	return nil
 }

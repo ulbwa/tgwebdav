@@ -99,7 +99,7 @@ func TestBlobRepository_CreateGetUpdate(t *testing.T) {
 
 	// Update of a missing row → ErrNotFound.
 	ghost := &model.Blob{ID: uuid.New(), ChannelID: channelID}
-	if err := repo.Update(ctx, ghost); !errors.Is(err, model.ErrNotFound) {
+	if err := repo.Update(ctx, ghost); !errors.Is(err, ErrNotFound) {
 		t.Fatalf("Update missing: err = %v, want ErrNotFound", err)
 	}
 }
@@ -124,7 +124,7 @@ func TestBlobRepository_SetState(t *testing.T) {
 	if got.State != model.BlobStateStored {
 		t.Fatalf("State = %v, want Stored", got.State)
 	}
-	if err := repo.SetState(ctx, uuid.New(), model.BlobStateStored); !errors.Is(err, model.ErrNotFound) {
+	if err := repo.SetState(ctx, uuid.New(), model.BlobStateStored); !errors.Is(err, ErrNotFound) {
 		t.Fatalf("SetState missing: err = %v, want ErrNotFound", err)
 	}
 }
@@ -177,7 +177,7 @@ func TestBlobRepository_AddRefcountAtomicity(t *testing.T) {
 	if got.Refcount != n-10 {
 		t.Fatalf("refcount after -10 = %d, want %d", got.Refcount, n-10)
 	}
-	if err := repo.AddRefcount(ctx, uuid.New(), 1); !errors.Is(err, model.ErrNotFound) {
+	if err := repo.AddRefcount(ctx, uuid.New(), 1); !errors.Is(err, ErrNotFound) {
 		t.Fatalf("AddRefcount missing: err = %v, want ErrNotFound", err)
 	}
 }
@@ -389,10 +389,10 @@ func TestBlobRepository_DeleteAndCount(t *testing.T) {
 	if err := repo.Delete(ctx, b.ID); err != nil {
 		t.Fatalf("Delete: %v", err)
 	}
-	if _, err := repo.GetByID(ctx, b.ID); !errors.Is(err, model.ErrNotFound) {
+	if _, err := repo.GetByID(ctx, b.ID); !errors.Is(err, ErrNotFound) {
 		t.Fatalf("GetByID after delete: err = %v, want ErrNotFound", err)
 	}
-	if err := repo.Delete(ctx, b.ID); !errors.Is(err, model.ErrNotFound) {
+	if err := repo.Delete(ctx, b.ID); !errors.Is(err, ErrNotFound) {
 		t.Fatalf("Delete missing: err = %v, want ErrNotFound", err)
 	}
 	if n, err := repo.Count(ctx); err != nil || n != 0 {
@@ -404,7 +404,7 @@ func TestBlobRepository_GetByID_NotFound(t *testing.T) {
 	pool := setupTestPool(t)
 	ctx := context.Background()
 	repo := NewBlobRepository(pool)
-	if _, err := repo.GetByID(ctx, uuid.New()); !errors.Is(err, model.ErrNotFound) {
+	if _, err := repo.GetByID(ctx, uuid.New()); !errors.Is(err, ErrNotFound) {
 		t.Fatalf("GetByID missing: err = %v, want ErrNotFound", err)
 	}
 }

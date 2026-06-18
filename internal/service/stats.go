@@ -170,7 +170,7 @@ func (r *StatRecorder) Query(ctx context.Context, metric, label string, from, to
 }
 
 // Latest returns the most recent persisted sample for metric/label, or
-// model.ErrNotFound when none exists, by delegating to the stat repository.
+// repository.ErrNotFound when none exists, by delegating to the stat repository.
 func (r *StatRecorder) Latest(ctx context.Context, metric, label string) (*model.StatSample, error) {
 	sample, err := r.store.Latest(ctx, metric, label)
 	if err != nil {

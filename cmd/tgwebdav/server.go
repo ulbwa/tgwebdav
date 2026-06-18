@@ -15,15 +15,13 @@ import (
 	"github.com/jackc/pgx/v5/tracelog"
 	"github.com/spf13/cobra"
 
-	"github.com/ulbwa/tgwebdav/db/migrations"
-	"github.com/ulbwa/tgwebdav/internal/cache"
 	telegram "github.com/ulbwa/tgwebdav/internal/client/telegram"
-	"github.com/ulbwa/tgwebdav/internal/config"
 	"github.com/ulbwa/tgwebdav/internal/database"
 	httphandler "github.com/ulbwa/tgwebdav/internal/handler/http"
 	"github.com/ulbwa/tgwebdav/internal/model"
 	"github.com/ulbwa/tgwebdav/internal/repository"
 	"github.com/ulbwa/tgwebdav/internal/service"
+	"github.com/ulbwa/tgwebdav/internal/service/cache"
 	"github.com/ulbwa/tgwebdav/internal/service/webdavfs"
 )
 
@@ -36,10 +34,11 @@ var serverCmd = &cobra.Command{
 	Short: "Run the WebDAV and Management API servers",
 	Long:  "Run the WebDAV and Management API servers, applying pending migrations on boot and starting the background workers.",
 	RunE: func(cmd *cobra.Command, _ []string) error {
-		cfg, err := loadConfig(cmd)
+		cfg, err := loadServerConfig(cmd)
 		if err != nil {
 			return err
 		}
+		setLogLevel(cfg.LogLevel)
 		return runServer(cmd.Context(), cfg)
 	},
 }
@@ -47,7 +46,7 @@ var serverCmd = &cobra.Command{
 // runServer performs the full wire-up and serves until a signal or a fatal serve
 // error. It is the canon port of the old run(): config → db → repositories →
 // clients → services → handlers → server, then graceful shutdown.
-func runServer(rootCtx context.Context, cfg *config.Config) error {
+func runServer(rootCtx context.Context, cfg *serverConfig) error {
 	if rootCtx == nil {
 		rootCtx = context.Background()
 	}
@@ -58,7 +57,7 @@ func runServer(rootCtx context.Context, cfg *config.Config) error {
 		"cache_dir", cfg.CacheDir, "cache_size", cfg.CacheSize)
 
 	// 1. Migrations (fail fast). Keep auto-migrate-on-boot.
-	if err := migrations.Run(cfg.DSN, logger); err != nil {
+	if err := runMigrations(cfg.DSN, logger); err != nil {
 		return fmt.Errorf("migrations: %w", err)
 	}
 
@@ -253,7 +252,7 @@ func startWorker(wg *sync.WaitGroup, fn func()) {
 // in the old seed.go, failures are logged but never abort startup.
 func seed(
 	ctx context.Context,
-	cfg *config.Config,
+	cfg *serverConfig,
 	userSvc *service.UserService,
 	channelSvc *service.ChannelService,
 	botSvc *service.BotService,
@@ -290,7 +289,7 @@ func seed(
 		return
 	}
 
-	login, password, ok := cfg.FirstUserParts()
+	login, password, ok := cfg.firstUserParts()
 	if !ok {
 		logger.Warn("no users exist; set --first-user or TGWEBDAV_FIRST_USER (login:password) to bootstrap an admin")
 		return

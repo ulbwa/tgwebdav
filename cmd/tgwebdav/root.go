@@ -1,23 +1,13 @@
 package main
 
 import (
-	"log/slog"
-	"os"
-
 	"github.com/spf13/cobra"
-
-	"github.com/ulbwa/tgwebdav/internal/config"
 )
-
-// logLevelVar controls the global slog level at runtime. It defaults to INFO
-// and is lowered/raised once the configuration is resolved (setLogLevel), so the
-// handler installed in init() can be reconfigured without rebuilding it.
-var logLevelVar = new(slog.LevelVar)
 
 // rootCmd is the base command. Running the binary with no subcommand defaults to
 // the server (its RunE delegates to serverCmd). The persistent flags registered
-// here (config.AddFlags) are visible to every subcommand, so both `server` and
-// `migrate` resolve DSN and the .env file the same way.
+// here are visible to every subcommand, so both `server` and `migrate` resolve
+// the DSN, the .env file and the log level the same way.
 var rootCmd = &cobra.Command{
 	Use:           "tgwebdav",
 	Short:         "WebDAV server backed by Telegram channels",
@@ -36,42 +26,32 @@ func Execute() error {
 }
 
 func init() {
-	// Rule 3: a JSON slog handler to stderr, level-controlled by logLevelVar,
-	// installed as the process default before any command runs.
-	logLevelVar.Set(slog.LevelInfo)
-	handler := slog.NewJSONHandler(os.Stderr, &slog.HandlerOptions{Level: logLevelVar})
-	slog.SetDefault(slog.New(handler))
+	initLogger()
 
-	config.AddFlags(rootCmd.PersistentFlags())
+	// Persistent flags shared by every command.
+	pf := rootCmd.PersistentFlags()
+	pf.String("env-file", ".env", ".env file to load before resolving configuration")
+	pf.String("log-level", "info", "log level: debug|info|warn|error (env TGWEBDAV_LOG_LEVEL)")
+	pf.String("dsn", "", "PostgreSQL DSN (env TGWEBDAV_DSN)")
+
+	// Local flags for the server command only.
+	sf := serverCmd.Flags()
+	sf.String("webdav-addr", ":8080", "WebDAV listen address (env TGWEBDAV_WEBDAV_ADDR)")
+	sf.String("mgmt-addr", ":8081", "Management API listen address (env TGWEBDAV_MGMT_ADDR)")
+	sf.String("cache-dir", "", "blob cache directory; default user cache dir (env TGWEBDAV_CACHE_DIR)")
+	sf.String("cache-size", "1GiB", "blob cache size, e.g. 512MiB, 2GiB (env TGWEBDAV_CACHE_SIZE)")
+	sf.String("first-user", "", "bootstrap admin as login:password (env TGWEBDAV_FIRST_USER)")
 
 	rootCmd.AddCommand(serverCmd, migrateCmd)
 }
 
-// setLogLevel applies the resolved configuration's log level to the live handler
-// installed in init(). Unknown values fall back to INFO.
-func setLogLevel(level string) {
-	switch level {
-	case "debug":
-		logLevelVar.Set(slog.LevelDebug)
-	case "warn":
-		logLevelVar.Set(slog.LevelWarn)
-	case "error":
-		logLevelVar.Set(slog.LevelError)
-	default:
-		logLevelVar.Set(slog.LevelInfo)
-	}
-}
-
-// loadConfig handles the shared bootstrap both subcommands perform: load the
-// optional .env file, resolve the configuration from flags + env, then apply the
-// resolved log level to the global logger.
-func loadConfig(cmd *cobra.Command) (*config.Config, error) {
-	envFile, _ := cmd.Flags().GetString("env-file")
-	config.LoadDotenv(envFile)
-	cfg, err := config.Resolve(cmd.Flags())
+// resolveLogLevel reads the --log-level flag / TGWEBDAV_LOG_LEVEL env (after the
+// .env file has been loaded) and applies it to the global logger. Both commands
+// call it so the shared log level behaves identically regardless of subcommand.
+func resolveLogLevel(cmd *cobra.Command) {
+	v, err := newViper(cmd)
 	if err != nil {
-		return nil, err
+		return
 	}
-	setLogLevel(cfg.LogLevel)
-	return cfg, nil
+	setLogLevel(v.GetString("log-level"))
 }

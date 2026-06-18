@@ -215,7 +215,7 @@ func (s *ChannelService) reevaluateAvailability(ctx context.Context) error {
 // PickForUpload returns an available channel that has at least one member bot
 // usable right now (enabled and not rate-limited), round-robining across the
 // eligible channels via an atomic counter. When no such channel exists it
-// returns model.ErrNoBot. A channel whose only member bots are all parked
+// returns ErrNoBot. A channel whose only member bots are all parked
 // (disabled or rate-limited) is skipped so the subsequent bot pick does not fail
 // with ErrNoBot while another channel still has a usable bot.
 func (s *ChannelService) PickForUpload(ctx context.Context) (*model.Channel, error) {
@@ -224,7 +224,7 @@ func (s *ChannelService) PickForUpload(ctx context.Context) (*model.Channel, err
 		return nil, err
 	}
 	if len(eligible) == 0 {
-		return nil, fmt.Errorf("no channel with a usable member bot: %w", model.ErrNoBot)
+		return nil, fmt.Errorf("no channel with a usable member bot: %w", ErrNoBot)
 	}
 
 	idx := int(s.rr.Add(1)-1) % len(eligible)

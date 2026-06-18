@@ -15,7 +15,9 @@ import (
 	"time"
 
 	"github.com/google/uuid"
+
 	"github.com/ulbwa/tgwebdav/internal/model"
+	"github.com/ulbwa/tgwebdav/internal/repository"
 )
 
 // verifyCacheTTL bounds how long a successful argon2id verification is
@@ -77,9 +79,9 @@ func NewAuthService(users userStore, tokens tokenStore) *AuthService {
 // A plain username authenticates that user directly, yielding
 // Acting == Auth.
 //
-// Unknown users and wrong passwords are reported as model.ErrUnauthorized
+// Unknown users and wrong passwords are reported as ErrUnauthorized
 // so callers cannot distinguish the two. A valid non-admin attempting
-// impersonation is reported as model.ErrForbidden.
+// impersonation is reported as ErrForbidden.
 func (s *AuthService) AuthenticateBasic(ctx context.Context, username, password string) (*model.Principal, error) {
 	if adminLogin, targetLogin, ok := strings.Cut(username, "/"); ok {
 		return s.authenticateImpersonation(ctx, adminLogin, targetLogin, password)
@@ -99,13 +101,13 @@ func (s *AuthService) authenticateImpersonation(ctx context.Context, adminLogin,
 		return nil, err
 	}
 	if !admin.IsAdmin {
-		return nil, fmt.Errorf("auth: %q is not an administrator: %w", adminLogin, model.ErrForbidden)
+		return nil, fmt.Errorf("auth: %q is not an administrator: %w", adminLogin, ErrForbidden)
 	}
 
 	target, err := s.users.GetByLogin(ctx, targetLogin)
 	if err != nil {
-		if errors.Is(err, model.ErrNotFound) {
-			return nil, fmt.Errorf("auth: impersonation target %q: %w", targetLogin, model.ErrUnauthorized)
+		if errors.Is(err, repository.ErrNotFound) {
+			return nil, fmt.Errorf("auth: impersonation target %q: %w", targetLogin, ErrUnauthorized)
 		}
 		return nil, fmt.Errorf("auth: load impersonation target: %w", err)
 	}
@@ -114,16 +116,16 @@ func (s *AuthService) authenticateImpersonation(ctx context.Context, adminLogin,
 
 // lookupAndVerify loads a user by login and checks the password. An unknown
 // login, a malformed stored hash, or a wrong password all collapse to
-// model.ErrUnauthorized. Other repository errors are propagated wrapped.
+// ErrUnauthorized. Other repository errors are propagated wrapped.
 func (s *AuthService) lookupAndVerify(ctx context.Context, login, password string) (*model.User, error) {
 	user, err := s.users.GetByLogin(ctx, login)
 	if err != nil {
-		if errors.Is(err, model.ErrNotFound) {
+		if errors.Is(err, repository.ErrNotFound) {
 			// Run a dummy argon2id verification against a fixed valid hash so the
 			// not-found path spends the same (deliberately slow) work as the
 			// found-but-wrong-password path.
 			_, _ = VerifyPassword(decoyPasswordHash, password)
-			return nil, fmt.Errorf("auth: unknown user %q: %w", login, model.ErrUnauthorized)
+			return nil, fmt.Errorf("auth: unknown user %q: %w", login, ErrUnauthorized)
 		}
 		return nil, fmt.Errorf("auth: load user: %w", err)
 	}
@@ -137,10 +139,10 @@ func (s *AuthService) lookupAndVerify(ctx context.Context, login, password strin
 
 	ok, err := VerifyPassword(user.PasswordHash, password)
 	if err != nil {
-		return nil, fmt.Errorf("auth: verify password for %q: %w", login, model.ErrUnauthorized)
+		return nil, fmt.Errorf("auth: verify password for %q: %w", login, ErrUnauthorized)
 	}
 	if !ok {
-		return nil, fmt.Errorf("auth: bad password for %q: %w", login, model.ErrUnauthorized)
+		return nil, fmt.Errorf("auth: bad password for %q: %w", login, ErrUnauthorized)
 	}
 	s.markVerified(key)
 	return user, nil
@@ -155,16 +157,16 @@ func (s *AuthService) AuthenticateBearer(ctx context.Context, token string) (*mo
 
 	tok, err := s.tokens.GetByHash(ctx, hash)
 	if err != nil {
-		if errors.Is(err, model.ErrNotFound) {
-			return nil, fmt.Errorf("auth: unknown bearer token: %w", model.ErrUnauthorized)
+		if errors.Is(err, repository.ErrNotFound) {
+			return nil, fmt.Errorf("auth: unknown bearer token: %w", ErrUnauthorized)
 		}
 		return nil, fmt.Errorf("auth: load token: %w", err)
 	}
 
 	user, err := s.users.GetByID(ctx, tok.UserID)
 	if err != nil {
-		if errors.Is(err, model.ErrNotFound) {
-			return nil, fmt.Errorf("auth: token owner missing: %w", model.ErrUnauthorized)
+		if errors.Is(err, repository.ErrNotFound) {
+			return nil, fmt.Errorf("auth: token owner missing: %w", ErrUnauthorized)
 		}
 		return nil, fmt.Errorf("auth: load token owner: %w", err)
 	}

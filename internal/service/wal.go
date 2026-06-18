@@ -10,6 +10,7 @@ import (
 
 	"github.com/google/uuid"
 
+	"github.com/ulbwa/tgwebdav/internal/client/telegram"
 	"github.com/ulbwa/tgwebdav/internal/model"
 )
 
@@ -599,13 +600,13 @@ func (p *Packer) upload(ctx context.Context, channel *model.Channel, data []byte
 			return res, bot, nil
 		}
 		lastErr = err
-		var rl *model.RateLimitError
+		var rl *telegram.RateLimitError
 		switch {
 		case errors.As(err, &rl):
 			until := time.Now().Add(rl.RetryAfter)
 			_ = p.botRepo.SetUnavailableUntil(ctx, bot.ID, &until)
 			_ = p.events.Log(ctx, model.EventBotUnavailable, "rate limited on upload", bot.ID.String())
-		case errors.Is(err, model.ErrTelegramForbidden):
+		case errors.Is(err, telegram.ErrTelegramForbidden):
 			_ = p.botChans.Upsert(ctx, &model.BotChannel{BotID: bot.ID, ChannelID: channel.ID, Member: false, CheckedAt: time.Now()})
 		default:
 			_ = p.events.Log(ctx, model.EventUploadFailed, err.Error(), channel.ID.String())

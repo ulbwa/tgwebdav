@@ -87,7 +87,7 @@ func TestTokenRepository_HappyPath(t *testing.T) {
 		t.Fatalf("Delete: %v", err)
 	}
 	_, err = repo.GetByHash(ctx, tok.TokenHash)
-	if !errors.Is(err, model.ErrNotFound) {
+	if !errors.Is(err, ErrNotFound) {
 		t.Errorf("GetByHash after Delete: want ErrNotFound, got %v", err)
 	}
 }
@@ -98,17 +98,17 @@ func TestTokenRepository_NotFound(t *testing.T) {
 	ctx := context.Background()
 
 	_, err := repo.GetByHash(ctx, "nonexistent")
-	if !errors.Is(err, model.ErrNotFound) {
+	if !errors.Is(err, ErrNotFound) {
 		t.Errorf("GetByHash missing: want ErrNotFound, got %v", err)
 	}
 
 	err = repo.Delete(ctx, uuid.New())
-	if !errors.Is(err, model.ErrNotFound) {
+	if !errors.Is(err, ErrNotFound) {
 		t.Errorf("Delete missing: want ErrNotFound, got %v", err)
 	}
 
 	err = repo.TouchLastUsed(ctx, uuid.New(), time.Now())
-	if !errors.Is(err, model.ErrNotFound) {
+	if !errors.Is(err, ErrNotFound) {
 		t.Errorf("TouchLastUsed missing: want ErrNotFound, got %v", err)
 	}
 }

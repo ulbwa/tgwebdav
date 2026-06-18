@@ -21,6 +21,7 @@ import (
 	"github.com/google/uuid"
 
 	"github.com/ulbwa/tgwebdav/internal/model"
+	"github.com/ulbwa/tgwebdav/internal/repository"
 )
 
 // ---- dependency interfaces -------------------------------------------------
@@ -304,14 +305,14 @@ func (s *BotService) RefreshMembership(ctx context.Context) error {
 // PickForUpload returns an available bot that is a member of channelID. It
 // considers only bots that are members of the channel, enabled, and available
 // at the current instant, and round-robins across them via an atomic counter.
-// When no such bot exists it returns model.ErrNoBot.
+// When no such bot exists it returns ErrNoBot.
 func (s *BotService) PickForUpload(ctx context.Context, channelID uuid.UUID) (*model.Bot, error) {
 	eligible, err := s.eligibleBots(ctx, channelID)
 	if err != nil {
 		return nil, err
 	}
 	if len(eligible) == 0 {
-		return nil, fmt.Errorf("no member bot for channel %s: %w", channelID, model.ErrNoBot)
+		return nil, fmt.Errorf("no member bot for channel %s: %w", channelID, ErrNoBot)
 	}
 
 	idx := int(s.rr.Add(1)-1) % len(eligible)
@@ -487,7 +488,7 @@ func applyChannelAvailability(
 	return nil
 }
 
-// errorsIsNotFound reports whether err wraps model.ErrNotFound.
+// errorsIsNotFound reports whether err wraps repository.ErrNotFound.
 func errorsIsNotFound(err error) bool {
-	return errors.Is(err, model.ErrNotFound)
+	return errors.Is(err, repository.ErrNotFound)
 }

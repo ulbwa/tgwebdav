@@ -13,6 +13,8 @@ import (
 	"github.com/google/uuid"
 
 	"github.com/ulbwa/tgwebdav/internal/model"
+	"github.com/ulbwa/tgwebdav/internal/repository"
+	"github.com/ulbwa/tgwebdav/internal/service"
 )
 
 func TestNormalize(t *testing.T) {
@@ -60,7 +62,7 @@ type fakeBlobReader struct{ data map[uuid.UUID][]byte }
 func (f fakeBlobReader) ReadBlob(_ context.Context, id uuid.UUID) ([]byte, error) {
 	b, ok := f.data[id]
 	if !ok {
-		return nil, model.ErrBlobUnavailable
+		return nil, service.ErrBlobUnavailable
 	}
 	return b, nil
 }
@@ -137,7 +139,7 @@ func (s *fakeStore) Create(_ context.Context, n *model.Node) error {
 	defer s.mu.Unlock()
 	for _, ex := range s.nodes {
 		if ex.UserID == n.UserID && ex.Path == n.Path {
-			return model.ErrAlreadyExists
+			return repository.ErrAlreadyExists
 		}
 	}
 	cp := *n
@@ -149,7 +151,7 @@ func (s *fakeStore) Update(_ context.Context, n *model.Node) error {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	if _, ok := s.nodes[n.ID]; !ok {
-		return model.ErrNotFound
+		return repository.ErrNotFound
 	}
 	cp := *n
 	s.nodes[n.ID] = &cp
@@ -161,7 +163,7 @@ func (s *fakeStore) Delete(_ context.Context, id uuid.UUID) error {
 	defer s.mu.Unlock()
 	node, ok := s.nodes[id]
 	if !ok {
-		return model.ErrNotFound
+		return repository.ErrNotFound
 	}
 	// Cascade: drop the node and every descendant by path, plus their extents/WAL.
 	prefix := node.Path
@@ -180,7 +182,7 @@ func (s *fakeStore) GetByID(_ context.Context, id uuid.UUID) (*model.Node, error
 	defer s.mu.Unlock()
 	n, ok := s.nodes[id]
 	if !ok {
-		return nil, model.ErrNotFound
+		return nil, repository.ErrNotFound
 	}
 	cp := *n
 	return &cp, nil
@@ -195,7 +197,7 @@ func (s *fakeStore) GetByPath(_ context.Context, userID uuid.UUID, p string) (*m
 			return &cp, nil
 		}
 	}
-	return nil, model.ErrNotFound
+	return nil, repository.ErrNotFound
 }
 
 func (s *fakeStore) ListChildren(_ context.Context, userID, parentID uuid.UUID) ([]model.Node, error) {
@@ -486,7 +488,7 @@ func TestCopyQuotaExceeded(t *testing.T) {
 	putStored(store, user, "/src.bin", 10, blobID)
 
 	err := fs.Copy(ctx, "/src.bin", "/dst.bin", true, false)
-	if err != model.ErrQuotaExceeded {
+	if err != ErrQuotaExceeded {
 		t.Fatalf("Copy quota: got %v, want ErrQuotaExceeded", err)
 	}
 	// The destination must not have been created.
@@ -509,7 +511,7 @@ func TestCheckQuotaSignals507(t *testing.T) {
 	}
 	putStored(store, user, "/big.bin", 18, uuid.New())
 
-	if err := fs.CheckQuota(ctx, "/new.bin", 5); err != model.ErrQuotaExceeded {
+	if err := fs.CheckQuota(ctx, "/new.bin", 5); err != ErrQuotaExceeded {
 		t.Errorf("CheckQuota over limit: got %v, want ErrQuotaExceeded", err)
 	}
 	if err := fs.CheckQuota(ctx, "/new.bin", 1); err != nil {
@@ -534,7 +536,7 @@ func TestWriteQuotaExceededRollsBack(t *testing.T) {
 	if _, err := wf.Write([]byte("0123456789")); err != nil { // 10 > 5
 		t.Fatalf("Write: %v", err)
 	}
-	if err := wf.Close(); err != model.ErrQuotaExceeded {
+	if err := wf.Close(); err != ErrQuotaExceeded {
 		t.Fatalf("Close: got %v, want ErrQuotaExceeded", err)
 	}
 	// The half-written node must have been rolled back.

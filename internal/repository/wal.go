@@ -28,7 +28,7 @@ func NewWALRepository(pool *pgxpool.Pool) *WALRepository {
 
 // AppendChunk inserts a WAL chunk using the caller-provided seq. The (node, seq)
 // uniqueness is enforced by the table, so a duplicate seq surfaces as
-// model.ErrAlreadyExists.
+// ErrAlreadyExists.
 func (r *WALRepository) AppendChunk(ctx context.Context, c *model.WALChunk) error {
 	if c.ID == uuid.Nil {
 		c.ID = uuid.New()

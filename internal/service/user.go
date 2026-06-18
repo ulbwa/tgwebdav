@@ -11,6 +11,7 @@ import (
 	"github.com/google/uuid"
 
 	"github.com/ulbwa/tgwebdav/internal/model"
+	"github.com/ulbwa/tgwebdav/internal/repository"
 )
 
 // userRepo is the repository surface UserService needs for users. It is wider
@@ -61,7 +62,7 @@ func NewUserService(users userRepo, tokens tokenRepo) *UserService {
 }
 
 // Create hashes the supplied password, populates a new user from p and
-// persists it. A duplicate login surfaces as model.ErrAlreadyExists (the
+// persists it. A duplicate login surfaces as repository.ErrAlreadyExists (the
 // repository maps the unique-constraint violation). The created user, including
 // its generated id and timestamp, is returned.
 func (s *UserService) Create(ctx context.Context, p CreateUserParams) (*model.User, error) {
@@ -95,7 +96,7 @@ func (s *UserService) List(ctx context.Context) ([]model.User, error) {
 	return users, nil
 }
 
-// Get returns the user with the given id, or model.ErrNotFound.
+// Get returns the user with the given id, or repository.ErrNotFound.
 func (s *UserService) Get(ctx context.Context, id uuid.UUID) (*model.User, error) {
 	u, err := s.users.GetByID(ctx, id)
 	if err != nil {
@@ -104,7 +105,7 @@ func (s *UserService) Get(ctx context.Context, id uuid.UUID) (*model.User, error
 	return u, nil
 }
 
-// Delete removes the user with the given id, or model.ErrNotFound.
+// Delete removes the user with the given id, or repository.ErrNotFound.
 func (s *UserService) Delete(ctx context.Context, id uuid.UUID) error {
 	if err := s.users.Delete(ctx, id); err != nil {
 		return fmt.Errorf("delete user %s: %w", id, err)
@@ -113,7 +114,7 @@ func (s *UserService) Delete(ctx context.Context, id uuid.UUID) error {
 }
 
 // SetPassword replaces a user's password with a fresh argon2id hash of
-// newPassword. A missing user surfaces as model.ErrNotFound.
+// newPassword. A missing user surfaces as repository.ErrNotFound.
 func (s *UserService) SetPassword(ctx context.Context, id uuid.UUID, newPassword string) error {
 	u, err := s.users.GetByID(ctx, id)
 	if err != nil {
@@ -131,7 +132,7 @@ func (s *UserService) SetPassword(ctx context.Context, id uuid.UUID, newPassword
 }
 
 // ListTokens returns every API token belonging to userID. The user is verified
-// to exist first so an unknown user yields model.ErrNotFound rather than an
+// to exist first so an unknown user yields repository.ErrNotFound rather than an
 // empty list.
 func (s *UserService) ListTokens(ctx context.Context, userID uuid.UUID) ([]model.APIToken, error) {
 	if _, err := s.users.GetByID(ctx, userID); err != nil {
@@ -173,7 +174,7 @@ func (s *UserService) CreateToken(ctx context.Context, userID uuid.UUID, name st
 
 // DeleteToken removes tokenID, but only if it actually belongs to userID. A
 // token id that does not belong to the user (or does not exist) yields
-// model.ErrNotFound rather than deleting an unrelated token.
+// repository.ErrNotFound rather than deleting an unrelated token.
 func (s *UserService) DeleteToken(ctx context.Context, userID, tokenID uuid.UUID) error {
 	tokens, err := s.tokens.ListByUser(ctx, userID)
 	if err != nil {
@@ -187,7 +188,7 @@ func (s *UserService) DeleteToken(ctx context.Context, userID, tokenID uuid.UUID
 		}
 	}
 	if !found {
-		return fmt.Errorf("token %s not owned by user %s: %w", tokenID, userID, model.ErrNotFound)
+		return fmt.Errorf("token %s not owned by user %s: %w", tokenID, userID, repository.ErrNotFound)
 	}
 	if err := s.tokens.Delete(ctx, tokenID); err != nil {
 		return fmt.Errorf("delete token %s: %w", tokenID, err)

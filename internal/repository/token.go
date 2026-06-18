@@ -76,7 +76,7 @@ func (r *TokenRepository) Delete(ctx context.Context, id uuid.UUID) error {
 		return translateError(err)
 	}
 	if n == 0 {
-		return model.ErrNotFound
+		return ErrNotFound
 	}
 	return nil
 }
@@ -93,7 +93,7 @@ func (r *TokenRepository) TouchLastUsed(ctx context.Context, id uuid.UUID, at ti
 		return translateError(err)
 	}
 	if n == 0 {
-		return model.ErrNotFound
+		return ErrNotFound
 	}
 	return nil
 }

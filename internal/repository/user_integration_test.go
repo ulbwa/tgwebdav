@@ -89,7 +89,7 @@ func TestUserRepository_HappyPath(t *testing.T) {
 	}
 
 	// Gone
-	if _, err := repo.GetByID(ctx, u.ID); !errors.Is(err, model.ErrNotFound) {
+	if _, err := repo.GetByID(ctx, u.ID); !errors.Is(err, ErrNotFound) {
 		t.Errorf("GetByID after Delete: want ErrNotFound, got %v", err)
 	}
 }
@@ -100,22 +100,22 @@ func TestUserRepository_NotFound(t *testing.T) {
 	ctx := context.Background()
 
 	_, err := repo.GetByID(ctx, uuid.New())
-	if !errors.Is(err, model.ErrNotFound) {
+	if !errors.Is(err, ErrNotFound) {
 		t.Errorf("GetByID missing: want ErrNotFound, got %v", err)
 	}
 
 	_, err = repo.GetByLogin(ctx, "nobody")
-	if !errors.Is(err, model.ErrNotFound) {
+	if !errors.Is(err, ErrNotFound) {
 		t.Errorf("GetByLogin missing: want ErrNotFound, got %v", err)
 	}
 
 	err = repo.Update(ctx, &model.User{ID: uuid.New(), Login: "x"})
-	if !errors.Is(err, model.ErrNotFound) {
+	if !errors.Is(err, ErrNotFound) {
 		t.Errorf("Update missing: want ErrNotFound, got %v", err)
 	}
 
 	err = repo.Delete(ctx, uuid.New())
-	if !errors.Is(err, model.ErrNotFound) {
+	if !errors.Is(err, ErrNotFound) {
 		t.Errorf("Delete missing: want ErrNotFound, got %v", err)
 	}
 }
@@ -132,7 +132,7 @@ func TestUserRepository_DuplicateLogin(t *testing.T) {
 
 	u2 := &model.User{Login: "bob", PasswordHash: "hash2"}
 	err := repo.Create(ctx, u2)
-	if !errors.Is(err, model.ErrAlreadyExists) {
+	if !errors.Is(err, ErrAlreadyExists) {
 		t.Errorf("Create duplicate login: want ErrAlreadyExists, got %v", err)
 	}
 }

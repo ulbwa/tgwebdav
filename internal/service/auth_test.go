@@ -11,6 +11,7 @@ import (
 
 	"github.com/google/uuid"
 	"github.com/ulbwa/tgwebdav/internal/model"
+	"github.com/ulbwa/tgwebdav/internal/repository"
 )
 
 // ---- in-memory fakes -------------------------------------------------------
@@ -36,14 +37,14 @@ func (f *fakeUserStore) GetByID(_ context.Context, id uuid.UUID) (*model.User, e
 	if u, ok := f.byID[id]; ok {
 		return u, nil
 	}
-	return nil, model.ErrNotFound
+	return nil, repository.ErrNotFound
 }
 
 func (f *fakeUserStore) GetByLogin(_ context.Context, login string) (*model.User, error) {
 	if u, ok := f.byLogin[login]; ok {
 		return u, nil
 	}
-	return nil, model.ErrNotFound
+	return nil, repository.ErrNotFound
 }
 
 // compile-time assertion the fake satisfies the interface.
@@ -64,7 +65,7 @@ func (f *fakeTokenStore) GetByHash(_ context.Context, hash string) (*model.APITo
 	if t, ok := f.byHash[hash]; ok {
 		return t, nil
 	}
-	return nil, model.ErrNotFound
+	return nil, repository.ErrNotFound
 }
 
 func (f *fakeTokenStore) TouchLastUsed(_ context.Context, id uuid.UUID, at time.Time) error {
@@ -156,7 +157,7 @@ func TestAuthBasicWrongPassword(t *testing.T) {
 	svc := NewAuthService(users, newFakeTokenStore())
 
 	_, err := svc.AuthenticateBasic(context.Background(), "alice", "nope")
-	if !errors.Is(err, model.ErrUnauthorized) {
+	if !errors.Is(err, ErrUnauthorized) {
 		t.Fatalf("want ErrUnauthorized, got %v", err)
 	}
 }
@@ -165,7 +166,7 @@ func TestAuthBasicUnknownUser(t *testing.T) {
 	svc := NewAuthService(newFakeUserStore(), newFakeTokenStore())
 
 	_, err := svc.AuthenticateBasic(context.Background(), "ghost", "whatever")
-	if !errors.Is(err, model.ErrUnauthorized) {
+	if !errors.Is(err, ErrUnauthorized) {
 		t.Fatalf("want ErrUnauthorized, got %v", err)
 	}
 }
@@ -207,7 +208,7 @@ func TestAuthBasicImpersonationNonAdminForbidden(t *testing.T) {
 	svc := NewAuthService(users, newFakeTokenStore())
 
 	_, err := svc.AuthenticateBasic(context.Background(), "carol/bob", "carolpw")
-	if !errors.Is(err, model.ErrForbidden) {
+	if !errors.Is(err, ErrForbidden) {
 		t.Fatalf("want ErrForbidden, got %v", err)
 	}
 }
@@ -220,7 +221,7 @@ func TestAuthBasicImpersonationBadAdminPassword(t *testing.T) {
 	svc := NewAuthService(users, newFakeTokenStore())
 
 	_, err := svc.AuthenticateBasic(context.Background(), "root/bob", "wrong")
-	if !errors.Is(err, model.ErrUnauthorized) {
+	if !errors.Is(err, ErrUnauthorized) {
 		t.Fatalf("want ErrUnauthorized for bad admin password, got %v", err)
 	}
 }
@@ -232,7 +233,7 @@ func TestAuthBasicImpersonationUnknownTarget(t *testing.T) {
 	svc := NewAuthService(users, newFakeTokenStore())
 
 	_, err := svc.AuthenticateBasic(context.Background(), "root/ghost", "adminpw")
-	if !errors.Is(err, model.ErrUnauthorized) {
+	if !errors.Is(err, ErrUnauthorized) {
 		t.Fatalf("want ErrUnauthorized for unknown target, got %v", err)
 	}
 }
@@ -282,7 +283,7 @@ func TestAuthBearerUnknownToken(t *testing.T) {
 	svc := NewAuthService(newFakeUserStore(), newFakeTokenStore())
 
 	_, err := svc.AuthenticateBearer(context.Background(), "does-not-exist")
-	if !errors.Is(err, model.ErrUnauthorized) {
+	if !errors.Is(err, ErrUnauthorized) {
 		t.Fatalf("want ErrUnauthorized, got %v", err)
 	}
 }
@@ -299,7 +300,7 @@ func TestAuthBearerMissingOwner(t *testing.T) {
 	svc := NewAuthService(newFakeUserStore(), tokens)
 
 	_, err := svc.AuthenticateBearer(context.Background(), raw)
-	if !errors.Is(err, model.ErrUnauthorized) {
+	if !errors.Is(err, ErrUnauthorized) {
 		t.Fatalf("want ErrUnauthorized for missing owner, got %v", err)
 	}
 }

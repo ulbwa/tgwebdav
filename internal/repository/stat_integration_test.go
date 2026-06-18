@@ -5,8 +5,6 @@ import (
 	"errors"
 	"testing"
 	"time"
-
-	"github.com/ulbwa/tgwebdav/internal/model"
 )
 
 func TestStatRepository_HappyPath(t *testing.T) {
@@ -82,7 +80,7 @@ func TestStatRepository_LatestNotFound(t *testing.T) {
 	ctx := context.Background()
 
 	_, err := repo.Latest(ctx, "nonexistent_metric", "nonexistent_label")
-	if !errors.Is(err, model.ErrNotFound) {
+	if !errors.Is(err, ErrNotFound) {
 		t.Errorf("Latest missing: want ErrNotFound, got %v", err)
 	}
 }

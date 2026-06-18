@@ -35,6 +35,7 @@ import (
 	"golang.org/x/text/unicode/norm"
 
 	"github.com/ulbwa/tgwebdav/internal/model"
+	"github.com/ulbwa/tgwebdav/internal/repository"
 )
 
 // txManager runs a function inside a single database transaction. The stores
@@ -184,9 +185,9 @@ func toFSErr(err error) error {
 	switch {
 	case err == nil:
 		return nil
-	case errors.Is(err, model.ErrNotFound):
+	case errors.Is(err, repository.ErrNotFound):
 		return os.ErrNotExist
-	case errors.Is(err, model.ErrAlreadyExists):
+	case errors.Is(err, repository.ErrAlreadyExists):
 		return os.ErrExist
 	default:
 		return err
@@ -200,7 +201,7 @@ func (f *FileSystem) ensureRoot(ctx context.Context, userID uuid.UUID) (*model.N
 		f.rootReady.Store(userID, struct{}{})
 		return root, nil
 	}
-	if !errors.Is(err, model.ErrNotFound) {
+	if !errors.Is(err, repository.ErrNotFound) {
 		return nil, err
 	}
 	now := time.Now()
@@ -217,7 +218,7 @@ func (f *FileSystem) ensureRoot(ctx context.Context, userID uuid.UUID) (*model.N
 		ModifiedAt:  now,
 	}
 	if err := f.nodes.Create(ctx, root); err != nil {
-		if errors.Is(err, model.ErrAlreadyExists) {
+		if errors.Is(err, repository.ErrAlreadyExists) {
 			f.rootReady.Store(userID, struct{}{})
 			return f.nodes.GetByPath(ctx, userID, "/")
 		}
@@ -246,7 +247,7 @@ func (f *FileSystem) Stat(ctx context.Context, name string) (fs.FileInfo, error)
 	p := normalize(name)
 	node, err := f.nodes.GetByPath(ctx, user.ID, p)
 	if err != nil {
-		if errors.Is(err, model.ErrNotFound) && p == "/" {
+		if errors.Is(err, repository.ErrNotFound) && p == "/" {
 			root, rerr := f.ensureRoot(ctx, user.ID)
 			if rerr != nil {
 				return nil, rerr
@@ -273,7 +274,7 @@ func (f *FileSystem) Mkdir(ctx context.Context, name string, _ os.FileMode) erro
 	}
 	if _, err := f.nodes.GetByPath(ctx, user.ID, p); err == nil {
 		return os.ErrExist
-	} else if !errors.Is(err, model.ErrNotFound) {
+	} else if !errors.Is(err, repository.ErrNotFound) {
 		return err
 	}
 	parent, err := f.nodes.GetByPath(ctx, user.ID, path.Dir(p))
@@ -320,7 +321,7 @@ func (f *FileSystem) OpenFile(ctx context.Context, name string, flag int, _ os.F
 func (f *FileSystem) openRead(ctx context.Context, user *model.User, p string) (webdav.File, error) {
 	node, err := f.nodes.GetByPath(ctx, user.ID, p)
 	if err != nil {
-		if errors.Is(err, model.ErrNotFound) && p == "/" {
+		if errors.Is(err, repository.ErrNotFound) && p == "/" {
 			root, rerr := f.ensureRoot(ctx, user.ID)
 			if rerr != nil {
 				return nil, rerr
@@ -364,7 +365,7 @@ func (f *FileSystem) openWrite(ctx context.Context, user *model.User, p string, 
 			return nil, err
 		}
 		return f.newWriter(ctx, user, existing), nil
-	case errors.Is(err, model.ErrNotFound):
+	case errors.Is(err, repository.ErrNotFound):
 		now := time.Now()
 		node := &model.Node{
 			ID:         uuid.New(),
@@ -501,7 +502,7 @@ func (f *FileSystem) Rename(ctx context.Context, oldName, newName string) error 
 			if err := f.removeWithin(ctx, user.ID, existing); err != nil {
 				return err
 			}
-		} else if !errors.Is(err, model.ErrNotFound) {
+		} else if !errors.Is(err, repository.ErrNotFound) {
 			return err
 		}
 
@@ -572,11 +573,11 @@ func (f *FileSystem) CheckQuota(ctx context.Context, p string, additional int64)
 	}
 	if existing, err := f.nodes.GetByPath(ctx, user.ID, normalize(p)); err == nil && !existing.IsDir {
 		used -= existing.Size
-	} else if err != nil && !errors.Is(err, model.ErrNotFound) {
+	} else if err != nil && !errors.Is(err, repository.ErrNotFound) {
 		return err
 	}
 	if used+additional > user.QuotaBytes {
-		return model.ErrQuotaExceeded
+		return ErrQuotaExceeded
 	}
 	return nil
 }

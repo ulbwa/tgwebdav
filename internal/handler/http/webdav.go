@@ -68,7 +68,7 @@ func NewWebDAVHandler(d WebDAVDeps) http.Handler {
 		case http.MethodPut:
 			if r.ContentLength > 0 {
 				if err := fs.CheckQuota(r.Context(), r.URL.Path, r.ContentLength); err != nil {
-					if errors.Is(err, model.ErrQuotaExceeded) {
+					if errors.Is(err, webdavfs.ErrQuotaExceeded) {
 						http.Error(w, "insufficient storage", http.StatusInsufficientStorage)
 						return
 					}
@@ -147,7 +147,7 @@ func handleCopy(w http.ResponseWriter, r *http.Request, fs *webdavfs.FileSystem,
 		} else {
 			w.WriteHeader(http.StatusCreated)
 		}
-	case errors.Is(err, model.ErrQuotaExceeded):
+	case errors.Is(err, webdavfs.ErrQuotaExceeded):
 		http.Error(w, "insufficient storage", http.StatusInsufficientStorage)
 	case errors.Is(err, os.ErrExist):
 		http.Error(w, "destination exists", http.StatusPreconditionFailed)
