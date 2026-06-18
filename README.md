@@ -275,6 +275,8 @@ tgwebdav stores file **bytes in Telegram** and keeps only **metadata in Postgres
 
 This means **write latency the client sees ≠ time-to-durable-in-Telegram**, and the two have very different throughput ceilings. The tables below measure each phase distinctly. All figures are framed against a **~100 Mbit/s (≈12.5 MB/s)** link.
 
+> **Reproduce these yourself.** The tables below were measured on the setup described in [Test setup](#test-setup). Anyone can reproduce the methodology with [`scripts/benchmark.sh`](scripts/benchmark.sh) — a self-contained, Docker-based benchmark (it spins a throwaway Postgres, builds the binary, registers bots/channels via the Management API, and prints these same Markdown tables). Bring your own Telegram bots/channels via `BENCH_BOT_TOKENS` / `BENCH_CHANNEL_IDS` (every bot must be an admin of every channel). See the script header for all options. Your numbers will differ — pack-to-Telegram and cold-read throughput are bounded by the Telegram Bot API and your bot count, not by the machine.
+
 ### Throughput by file size
 
 Representative figures (median of repeated runs). PUT/WAL, buffered, and warm reads are local (Postgres / disk) and are bounded by the machine, not the network. Pack-to-Telegram and cold reads are bounded by the **Telegram Bot API**.
