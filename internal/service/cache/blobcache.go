@@ -60,12 +60,22 @@ type Cache struct {
 // (size from os.Stat, last-access from the file's modification time). If the
 // rebuilt set already exceeds maxBytes, the least-recently used files are
 // evicted immediately so the cache opens within its bound.
+//
+// The directory is created 0700 (owner-only): cached blobs are decrypted user
+// file content, so it must not be world-traversable or world-listable. The blob
+// files themselves are written 0600 via os.CreateTemp. If the directory already
+// exists with looser permissions, its mode is tightened to 0700.
 func New(dir string, maxBytes int64, idleTTL time.Duration, logger *slog.Logger) (*Cache, error) {
 	if logger == nil {
 		logger = slog.Default()
 	}
-	if err := os.MkdirAll(dir, 0o755); err != nil {
+	if err := os.MkdirAll(dir, 0o700); err != nil {
 		return nil, fmt.Errorf("cache: create dir %q: %w", dir, err)
+	}
+	// MkdirAll leaves an already-existing directory's mode unchanged, so tighten
+	// it explicitly in case a previous run (or the operator) created it 0755.
+	if err := os.Chmod(dir, 0o700); err != nil {
+		return nil, fmt.Errorf("cache: tighten dir %q permissions: %w", dir, err)
 	}
 	c := &Cache{
 		dir:      dir,

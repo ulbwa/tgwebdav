@@ -51,6 +51,43 @@ func TestGetMiss(t *testing.T) {
 	}
 }
 
+// TestDirAndFilePermissions asserts the cache is owner-only at rest: the
+// directory is 0700 (even when it pre-exists with looser perms) and blob files
+// are 0600. Cached blobs are decrypted user content, so they must not be
+// world-readable or the directory world-listable.
+func TestDirAndFilePermissions(t *testing.T) {
+	dir := filepath.Join(t.TempDir(), "blobs")
+	// Pre-create the directory world-traversable to prove New tightens it.
+	if err := os.MkdirAll(dir, 0o755); err != nil {
+		t.Fatalf("pre-create dir: %v", err)
+	}
+
+	c, err := New(dir, 0, 0, slog.New(slog.NewTextHandler(io.Discard, nil)))
+	if err != nil {
+		t.Fatalf("New: %v", err)
+	}
+
+	di, err := os.Stat(dir)
+	if err != nil {
+		t.Fatalf("stat dir: %v", err)
+	}
+	if got := di.Mode().Perm(); got != 0o700 {
+		t.Fatalf("cache dir perm = %v, want 0700", got)
+	}
+
+	id := uuid.New()
+	if err := c.Put(id, []byte("secret bytes")); err != nil {
+		t.Fatalf("Put: %v", err)
+	}
+	fi, err := os.Stat(c.pathFor(id))
+	if err != nil {
+		t.Fatalf("stat blob file: %v", err)
+	}
+	if got := fi.Mode().Perm(); got != 0o600 {
+		t.Fatalf("blob file perm = %v, want 0600", got)
+	}
+}
+
 func TestPutOverwriteAdjustsTotal(t *testing.T) {
 	c := newTestCache(t, 0, 0)
 	id := uuid.New()
