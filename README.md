@@ -57,6 +57,7 @@ File **bytes live in Telegram**; **metadata lives in Postgres**. Writes are writ
 
 - A `PUT` does **not** upload to Telegram inline. The bytes go into the Postgres write-ahead buffer (`wal_chunks`), the file is marked *buffered*, and the request completes at Postgres speed. The file is durable and readable from the WAL immediately.
 - A background **packer** groups buffered data into ~19 MiB blobs (small files batched together, large files split), computes each blob's SHA-256, uploads it to a Telegram channel spread across the enabled bots, records the resulting per-bot `file_id`s and the file's extents, marks the node *stored*, and **deletes the WAL rows**.
+- **Batching to conserve the Telegram request budget:** the packer fills a blob to ~19 MiB before uploading; a partially-filled blob is only flushed after `wal_idle_timeout_ms` of no new writes (**default 60 s**). The idle timer resets on every write, so under sustained load blobs upload as soon as they reach ~19 MiB, and a trickle of tiny files accumulates into one blob instead of one Telegram upload per file (each bot has a limited request rate). Buffered files remain durable and readable from Postgres the whole time; tune `wal_idle_timeout_ms` via `PUT /api/v1/settings`.
 - **Reads** are served from the WAL (before packing), from the local disk LRU cache (warm), or by downloading + SHA-256-verifying the blobs from Telegram (cold).
 
 ### Integrity verification
@@ -290,7 +291,7 @@ Representative figures (median of repeated runs). PUT/WAL, buffered, and warm re
 | 20 MiB   | ~139 MB/s | ~190 MB/s | **~6.2 MB/s** | ~2.2 MB/s | ~950 MB/s | 2 |
 | 100 MiB  | ~133 MB/s | ~175 MB/s | **~5–8 MB/s** | ~2.5–3.1 MB/s | ~1.3 GB/s | 6 |
 
-¹ Files ≤ ~19 MiB are batched into shared blobs and only sealed after a 5 s WAL idle timeout, so their per-file "pack time" measures the flush delay, not upload speed. True upload throughput is shown by multi-blob files and the sustained test below.
+¹ Files ≤ ~19 MiB are batched into shared blobs and only sealed after the WAL idle timeout (`wal_idle_timeout_ms`, default 60 s in production — the benchmark lowers it so this phase measures upload speed, not the flush delay). Their per-file "pack time" therefore reflects the flush delay; true upload throughput is shown by multi-blob files and the sustained test below.
 
 **Sustained pack-to-Telegram (packer kept busy):** 500 MiB (5 × 100 MiB) written into the WAL in **2.2 s (≈230 MB/s ingest)**, then fully uploaded to Telegram in **63 s → 7.9 MB/s**, using all 4 bots in parallel (91 blobs).
 
@@ -339,7 +340,7 @@ The metadata-per-MiB figure here is a **worst case**: 3,109 of the 3,158 files w
 
 ### Test setup
 
-Apple M1 Pro (10 cores, 16 GiB RAM), macOS; Go 1.26. Postgres 17 (alpine) in Docker, exposed on `localhost:5433`, pool max 50 conns. tgwebdav single binary; WebDAV on `127.0.0.1:18080`, Management API on `127.0.0.1:18081`; 1 GiB disk LRU blob cache. Storage backend: real Telegram with **4 bots** across **2 channels**; `blob_max_size` ≈ 19 MiB, `wal_idle_timeout_ms` = 5000. Throughput measured against a **~100 Mbit/s (≈12.5 MB/s)** reference link. SHA-256 verified on all reads.
+Apple M1 Pro (10 cores, 16 GiB RAM), macOS; Go 1.26. Postgres 17 (alpine) in Docker, exposed on `localhost:5433`, pool max 50 conns. tgwebdav single binary; WebDAV on `127.0.0.1:18080`, Management API on `127.0.0.1:18081`; 1 GiB disk LRU blob cache. Storage backend: real Telegram with **4 bots** across **2 channels**; `blob_max_size` ≈ 19 MiB; `wal_idle_timeout_ms` lowered for the small-file pack measurement (production default is **60000**). Throughput measured against a **~100 Mbit/s (≈12.5 MB/s)** reference link. SHA-256 verified on all reads.
 
 ---
 

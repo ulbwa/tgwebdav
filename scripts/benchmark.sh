@@ -58,6 +58,9 @@
 #   BENCH_SMALL_OPS     Operations per concurrency level            (default 400)
 #   BENCH_PG_IMAGE      Postgres image                       (default postgres:17-alpine)
 #   BENCH_PACK_TIMEOUT  Seconds to wait for a file to pack to Telegram (default 600)
+#   BENCH_WAL_IDLE_MS   WAL idle-flush timeout used during the run, in ms (default 2000;
+#                       production default is 60000 — lowered here so the small-file
+#                       pack phase measures upload speed, not the idle wait)
 #
 # EXAMPLE (full matrix)
 #   BENCH_BOT_TOKENS="123:AAA,456:BBB" BENCH_CHANNEL_IDS="111,222" ./scripts/benchmark.sh
@@ -96,6 +99,7 @@ BENCH_CONCURRENCY="${BENCH_CONCURRENCY:-8 16 32}"
 BENCH_SMALL_OPS="${BENCH_SMALL_OPS:-400}"
 BENCH_PG_IMAGE="${BENCH_PG_IMAGE:-postgres:17-alpine}"
 BENCH_PACK_TIMEOUT="${BENCH_PACK_TIMEOUT:-600}"
+BENCH_WAL_IDLE_MS="${BENCH_WAL_IDLE_MS:-2000}"
 
 # Generated, kept only in shell vars — never echoed.
 SECRET_KEY="$(openssl rand -hex 32 2>/dev/null || head -c 32 /dev/urandom | od -An -tx1 | tr -d ' \n')"
@@ -490,6 +494,19 @@ add_bots_and_channels() {
   stop_server
   start_server
   log "server restarted; ready to benchmark"
+
+  # 5) Lower the WAL idle-flush timeout for the benchmark. In production the
+  #    default is 60 s so a trickle of small files accumulates into one ~19 MiB
+  #    blob (conserving each bot's Telegram request budget). For measurement we
+  #    want the small-file "pack" phase to reflect upload speed, not a 60 s wait,
+  #    so we shrink it via the Management API (settings live in the DB).
+  if curl_admin -X PUT "${MGMT_URL}/api/v1/settings" \
+      -H 'Content-Type: application/json' \
+      -d "{\"wal_idle_timeout_ms\": ${BENCH_WAL_IDLE_MS}}" >/dev/null 2>&1; then
+    log "wal_idle_timeout_ms set to ${BENCH_WAL_IDLE_MS} for benchmarking (production default 60000)"
+  else
+    log "warning: could not lower wal_idle_timeout_ms; small-file pack timings will include the idle wait"
+  fi
 }
 
 # ----------------------------------------------------------------------------------

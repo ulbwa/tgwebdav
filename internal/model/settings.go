@@ -8,7 +8,10 @@ type Settings struct {
 	// BlobMaxSize is the working blob size in bytes (< 20 MiB getFile limit).
 	BlobMaxSize int64
 	// WALIdleTimeout is how long the packer waits after the last append before
-	// flushing a partially-filled blob.
+	// flushing a partially-filled blob. A longer value lets more small files
+	// accumulate into a single ~BlobMaxSize blob before upload, conserving the
+	// per-bot Telegram request budget (the timer resets on each new write, so
+	// under load blobs still fill and upload as soon as they reach BlobMaxSize).
 	WALIdleTimeout time.Duration
 	// MaxFileSize caps a single uploaded file (0 = unlimited, split as needed).
 	MaxFileSize int64
@@ -21,7 +24,7 @@ type Settings struct {
 func DefaultSettings() Settings {
 	return Settings{
 		BlobMaxSize:              19 * 1024 * 1024,
-		WALIdleTimeout:           5 * time.Second,
+		WALIdleTimeout:           60 * time.Second,
 		MaxFileSize:              0,
 		DefaultEvictionThreshold: 900_000,
 	}

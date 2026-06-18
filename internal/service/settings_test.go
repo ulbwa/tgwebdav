@@ -110,8 +110,8 @@ func TestSettingsGetDefaults(t *testing.T) {
 	if got.BlobMaxSize != 19*1024*1024 {
 		t.Errorf("default BlobMaxSize: got %d, want %d", got.BlobMaxSize, 19*1024*1024)
 	}
-	if got.WALIdleTimeout != 5*time.Second {
-		t.Errorf("default WALIdleTimeout: got %v, want 5s", got.WALIdleTimeout)
+	if got.WALIdleTimeout != 60*time.Second {
+		t.Errorf("default WALIdleTimeout: got %v, want 60s", got.WALIdleTimeout)
 	}
 	if got.DefaultEvictionThreshold != 900_000 {
 		t.Errorf("default DefaultEvictionThreshold: got %d, want 900000", got.DefaultEvictionThreshold)
