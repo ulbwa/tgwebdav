@@ -2,6 +2,7 @@ package service
 
 import (
 	"context"
+	"errors"
 	"testing"
 	"time"
 
@@ -285,6 +286,87 @@ func TestReapNotFoundStillDeletesRow(t *testing.T) {
 	}
 	if n := h.countEvents(model.EventBlobReaped); n != 1 {
 		t.Fatalf("EventBlobReaped count = %d, want 1", n)
+	}
+}
+
+// TestReapListErrorReturnsEarly verifies a ListCollectable failure aborts the
+// cycle with no deletes.
+func TestReapListErrorReturnsEarly(t *testing.T) {
+	h := newMaintHarness()
+	h.blobs.listErr = errors.New("db down")
+	h.svc().reap(context.Background())
+	if len(h.tg.calls) != 0 || len(h.blobs.deleted) != 0 {
+		t.Fatalf("reap should do nothing when listing fails")
+	}
+}
+
+// TestReapSkipsBlobWithUnknownChannel verifies a blob whose channel is missing is
+// skipped (no delete attempt).
+func TestReapSkipsBlobWithUnknownChannel(t *testing.T) {
+	h := newMaintHarness()
+	h.picker.bot = &model.Bot{ID: uuid.New(), Username: "a", Enabled: true}
+	// Channel id is not registered in maintFakeChannels → GetByID errors.
+	h.blobs.collectable = []model.Blob{{ID: uuid.New(), ChannelID: uuid.New(), MessageID: 1}}
+
+	h.svc().reap(context.Background())
+	if len(h.tg.calls) != 0 {
+		t.Fatalf("reap attempted a delete for a blob with no channel")
+	}
+	if len(h.blobs.deleted) != 0 {
+		t.Fatalf("reap deleted a row for a blob with no channel")
+	}
+}
+
+// TestReapSkipsBlobWithNoUsableBot verifies a blob whose channel has no usable
+// bot right now is left for a later cycle.
+func TestReapSkipsBlobWithNoUsableBot(t *testing.T) {
+	h := newMaintHarness()
+	channelID := uuid.New()
+	h.channels.items[channelID] = &model.Channel{ID: channelID, TGChatID: -100}
+	h.picker.err = ErrNoBot // no bot available
+	h.blobs.collectable = []model.Blob{{ID: uuid.New(), ChannelID: channelID, MessageID: 1}}
+
+	h.svc().reap(context.Background())
+	if len(h.tg.calls) != 0 || len(h.blobs.deleted) != 0 {
+		t.Fatalf("reap should skip when no usable bot; calls=%d deleted=%d", len(h.tg.calls), len(h.blobs.deleted))
+	}
+}
+
+// TestReapGenericDeleteErrorSkipsRow verifies a non-typed delete error leaves the
+// row in place (no delete, no event) and continues.
+func TestReapGenericDeleteErrorSkipsRow(t *testing.T) {
+	h := newMaintHarness()
+	channelID := uuid.New()
+	h.channels.items[channelID] = &model.Channel{ID: channelID, TGChatID: -100}
+	h.picker.bot = &model.Bot{ID: uuid.New(), Username: "a", Enabled: true}
+	h.blobs.collectable = []model.Blob{{ID: uuid.New(), ChannelID: channelID, MessageID: 1}}
+	h.tg.deleteErr = errors.New("transient telegram error")
+
+	h.svc().reap(context.Background())
+	if len(h.tg.calls) != 1 {
+		t.Fatalf("delete should have been attempted once, got %d", len(h.tg.calls))
+	}
+	if len(h.blobs.deleted) != 0 {
+		t.Fatalf("row must NOT be deleted on a generic delete error")
+	}
+	if h.countEvents(model.EventBlobReaped) != 0 {
+		t.Fatalf("no reaped event on a generic delete error")
+	}
+}
+
+// TestRunCancelsCleanly verifies Run returns promptly when its context is
+// cancelled (lifecycle smoke test; the tickers fire on the order of minutes so
+// no housekeeping runs in this window).
+func TestRunCancelsCleanly(t *testing.T) {
+	h := newMaintHarness()
+	ctx, cancel := context.WithCancel(context.Background())
+	done := make(chan struct{})
+	go func() { h.svc().Run(ctx); close(done) }()
+	cancel()
+	select {
+	case <-done:
+	case <-time.After(2 * time.Second):
+		t.Fatal("Run did not return after context cancellation")
 	}
 }
 

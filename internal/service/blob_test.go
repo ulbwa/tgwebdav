@@ -762,6 +762,183 @@ func TestReadBlob_NoMemberBot(t *testing.T) {
 	}
 }
 
+// TestReadBlob_CachedFileIDRateLimitParksAndRecovers verifies the cached
+// file_id fast path hitting a rate limit parks the bot, and a second usable bot
+// recovers via forwarding.
+func TestReadBlob_CachedFileIDRateLimitParksAndRecovers(t *testing.T) {
+	h := newBlobHarness(t)
+	limited := h.addBot("rl")
+	good := h.addBot("ok")
+	blob := h.addStoredBlob(10)
+
+	const cachedID = "FID_RL"
+	_ = h.files.Upsert(context.Background(), &model.BlobBotFile{BlobID: blob.ID, BotID: limited.ID, FileID: cachedID})
+	// Cached download for the limited bot is rate-limited.
+	h.tg.downloadByFileID[cachedID] = tgResult{err: &telegram.RateLimitError{RetryAfter: 10 * time.Second}}
+
+	// The good bot recovers via forward.
+	const freshID = "FID_OK"
+	want := []byte("recovered")
+	h.tg.forwardByBot[good.Username] = tgForward{res: model.TGSendResult{MessageID: 3, FileID: freshID}}
+	h.tg.downloadByFileID[freshID] = tgResult{data: want}
+
+	got, err := h.reader.ReadBlob(context.Background(), blob.ID)
+	if err != nil {
+		t.Fatalf("ReadBlob: %v", err)
+	}
+	if string(got) != string(want) {
+		t.Fatalf("got %q, want %q", got, want)
+	}
+	parked, _ := h.bots.GetByID(context.Background(), limited.ID)
+	if parked.UnavailableUntil == nil {
+		t.Fatal("rate-limited bot on the fast path should be parked")
+	}
+}
+
+// TestReadBlob_CachedFileIDForbiddenRecordsNonMember verifies a 403 on the
+// cached fast path records the bot as a non-member and moves on.
+func TestReadBlob_CachedFileIDForbiddenRecordsNonMember(t *testing.T) {
+	h := newBlobHarness(t)
+	forbidden := h.addBot("forb")
+	good := h.addBot("good")
+	blob := h.addStoredBlob(10)
+
+	const cachedID = "FID_FORB"
+	_ = h.files.Upsert(context.Background(), &model.BlobBotFile{BlobID: blob.ID, BotID: forbidden.ID, FileID: cachedID})
+	h.tg.downloadByFileID[cachedID] = tgResult{err: telegram.ErrForbidden}
+
+	const freshID = "FID_OK2"
+	want := []byte("ok-bytes")
+	h.tg.forwardByBot[good.Username] = tgForward{res: model.TGSendResult{MessageID: 4, FileID: freshID}}
+	h.tg.downloadByFileID[freshID] = tgResult{data: want}
+
+	got, err := h.reader.ReadBlob(context.Background(), blob.ID)
+	if err != nil {
+		t.Fatalf("ReadBlob: %v", err)
+	}
+	if string(got) != string(want) {
+		t.Fatalf("got %q, want %q", got, want)
+	}
+	bcs, _ := h.botChans.ListByChannel(context.Background(), h.channelID)
+	var nonMember bool
+	for _, bc := range bcs {
+		if bc.BotID == forbidden.ID && !bc.Member {
+			nonMember = true
+		}
+	}
+	if !nonMember {
+		t.Fatal("forbidden bot should be recorded as a non-member")
+	}
+}
+
+// TestReadBlob_CachedFileIDTransientErrorFallsThrough verifies a transient
+// (non-typed) download error on the cached fast path is treated as transient and
+// the next bot is tried.
+func TestReadBlob_CachedFileIDTransientErrorFallsThrough(t *testing.T) {
+	h := newBlobHarness(t)
+	flaky := h.addBot("flaky")
+	good := h.addBot("good")
+	blob := h.addStoredBlob(10)
+
+	const cachedID = "FID_FLAKY"
+	_ = h.files.Upsert(context.Background(), &model.BlobBotFile{BlobID: blob.ID, BotID: flaky.ID, FileID: cachedID})
+	h.tg.downloadByFileID[cachedID] = tgResult{err: errors.New("connection reset")}
+
+	const freshID = "FID_OK3"
+	want := []byte("good-bytes")
+	h.tg.forwardByBot[good.Username] = tgForward{res: model.TGSendResult{MessageID: 6, FileID: freshID}}
+	h.tg.downloadByFileID[freshID] = tgResult{data: want}
+
+	got, err := h.reader.ReadBlob(context.Background(), blob.ID)
+	if err != nil {
+		t.Fatalf("ReadBlob: %v", err)
+	}
+	if string(got) != string(want) {
+		t.Fatalf("got %q, want %q", got, want)
+	}
+}
+
+// TestReadBlob_DownloadAfterForwardForbidden verifies a 403 on the post-forward
+// download records the bot non-member, deletes the forwarded copy, and moves on.
+func TestReadBlob_DownloadAfterForwardForbidden(t *testing.T) {
+	h := newBlobHarness(t)
+	bad := h.addBot("bad")
+	good := h.addBot("good")
+	blob := h.addStoredBlob(10)
+
+	// bad: forward succeeds but the post-forward download is forbidden.
+	h.tg.forwardByBot[bad.Username] = tgForward{res: model.TGSendResult{MessageID: 11, FileID: "FRESH_BAD"}}
+	h.tg.downloadByFileID["FRESH_BAD"] = tgResult{err: telegram.ErrForbidden}
+
+	// good: clean recovery.
+	const freshID = "FRESH_GOOD"
+	want := []byte("good")
+	h.tg.forwardByBot[good.Username] = tgForward{res: model.TGSendResult{MessageID: 12, FileID: freshID}}
+	h.tg.downloadByFileID[freshID] = tgResult{data: want}
+
+	got, err := h.reader.ReadBlob(context.Background(), blob.ID)
+	if err != nil {
+		t.Fatalf("ReadBlob: %v", err)
+	}
+	if string(got) != string(want) {
+		t.Fatalf("got %q, want %q", got, want)
+	}
+	// The forwarded copy from the failed download was best-effort deleted.
+	if len(h.tg.deleteCalls) == 0 {
+		t.Fatal("expected the failed forward's copy to be best-effort deleted")
+	}
+}
+
+// TestReadBlob_DownloadAfterForwardRateLimit verifies a rate limit on the
+// post-forward download parks the bot and tries the next.
+func TestReadBlob_DownloadAfterForwardRateLimit(t *testing.T) {
+	h := newBlobHarness(t)
+	rl := h.addBot("rl2")
+	good := h.addBot("good2")
+	blob := h.addStoredBlob(10)
+
+	h.tg.forwardByBot[rl.Username] = tgForward{res: model.TGSendResult{MessageID: 21, FileID: "FRESH_RL"}}
+	h.tg.downloadByFileID["FRESH_RL"] = tgResult{err: &telegram.RateLimitError{RetryAfter: 5 * time.Second}}
+
+	const freshID = "FRESH_OK"
+	want := []byte("done")
+	h.tg.forwardByBot[good.Username] = tgForward{res: model.TGSendResult{MessageID: 22, FileID: freshID}}
+	h.tg.downloadByFileID[freshID] = tgResult{data: want}
+
+	got, err := h.reader.ReadBlob(context.Background(), blob.ID)
+	if err != nil {
+		t.Fatalf("ReadBlob: %v", err)
+	}
+	if string(got) != string(want) {
+		t.Fatalf("got %q, want %q", got, want)
+	}
+	parked, _ := h.bots.GetByID(context.Background(), rl.ID)
+	if parked.UnavailableUntil == nil {
+		t.Fatal("bot rate-limited on post-forward download should be parked")
+	}
+}
+
+// TestPrefetchNoopOnZeroCapacity verifies Prefetch is a no-op when the cache
+// capacity is non-positive (no downloads issued).
+func TestPrefetchNoopOnZeroCapacity(t *testing.T) {
+	h := newBlobHarness(t)
+	bot := h.addBot("b")
+	h.cache.capacity = 0
+	ids := h.prefetchable(bot, 3)
+
+	h.reader.Prefetch(context.Background(), ids)
+	if len(h.tg.downloadCalls) != 0 {
+		t.Fatalf("Prefetch with zero capacity issued %d downloads, want 0", len(h.tg.downloadCalls))
+	}
+
+	// And an empty id list is also a no-op.
+	h.cache.capacity = 1 << 30
+	h.reader.Prefetch(context.Background(), nil)
+	if len(h.tg.downloadCalls) != 0 {
+		t.Fatalf("Prefetch(nil) issued downloads, want 0")
+	}
+}
+
 func TestReadBlob_FastPathPreferredOverNonCachedBot(t *testing.T) {
 	h := newBlobHarness(t)
 	// plainBot is a member with no cached file_id; cachedBot has a cached one.

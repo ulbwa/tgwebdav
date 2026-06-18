@@ -397,3 +397,175 @@ func TestRedactTokenPlainError(t *testing.T) {
 		t.Fatalf("token leaked: %q", got.Error())
 	}
 }
+
+func TestRedactTokenNilAndEmpty(t *testing.T) {
+	if got := redactToken(nil, "tok"); got != nil {
+		t.Errorf("redactToken(nil) = %v, want nil", got)
+	}
+	base := errors.New("boom")
+	if got := redactToken(base, ""); got != base {
+		t.Errorf("redactToken(err, \"\") should return the error unchanged")
+	}
+}
+
+func TestRateLimitErrorMessage(t *testing.T) {
+	e := &RateLimitError{RetryAfter: 17 * time.Second}
+	if msg := e.Error(); !strings.Contains(msg, "17s") {
+		t.Errorf("RateLimitError.Error() = %q, want it to mention 17s", msg)
+	}
+}
+
+// TestMapErrorGenericAndNotFoundVariants exercises mapError's generic branch and
+// the various "not found"-style description matches, plus the retry_after default.
+func TestMapErrorGenericAndNotFoundVariants(t *testing.T) {
+	c := New(nil)
+
+	// Generic non-typed error carries the code+description.
+	err := c.mapError(apiResponse{ErrorCode: 400, Description: "Bad Request: something weird"})
+	if errors.Is(err, ErrMessageNotFound) || errors.Is(err, ErrForbidden) {
+		t.Fatalf("generic error mis-classified: %v", err)
+	}
+	if !strings.Contains(err.Error(), "400") {
+		t.Errorf("generic error should carry the code: %v", err)
+	}
+
+	// Each not-found-style description maps to ErrMessageNotFound.
+	for _, desc := range []string{
+		"Bad Request: message to forward not found",
+		"Bad Request: MESSAGE_ID_INVALID",
+		"Bad Request: wrong file_id",
+		"Bad Request: wrong remote file identifier specified",
+	} {
+		if e := c.mapError(apiResponse{ErrorCode: 400, Description: desc}); !errors.Is(e, ErrMessageNotFound) {
+			t.Errorf("mapError(%q) = %v, want ErrMessageNotFound", desc, e)
+		}
+	}
+
+	// A 429 with no retry_after hint parks for the sane default (>0).
+	rlErr := c.mapError(apiResponse{ErrorCode: 429})
+	var rl *RateLimitError
+	if !errors.As(rlErr, &rl) {
+		t.Fatalf("429 → %v, want *RateLimitError", rlErr)
+	}
+	if rl.RetryAfter <= 0 {
+		t.Errorf("missing retry_after should default to a positive delay, got %s", rl.RetryAfter)
+	}
+}
+
+func TestGetMeError(t *testing.T) {
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = io.WriteString(w, `{"ok":false,"error_code":401,"description":"Unauthorized"}`)
+	}))
+	defer srv.Close()
+
+	c := newTestClient(t, srv)
+	if _, err := c.GetMe(context.Background(), testBot()); err == nil {
+		t.Fatal("GetMe with an invalid token should error")
+	}
+}
+
+func TestDownloadFileEmptyFilePath(t *testing.T) {
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		// getFile succeeds but returns an empty file_path.
+		_, _ = io.WriteString(w, `{"ok":true,"result":{"file_id":"X","file_path":""}}`)
+	}))
+	defer srv.Close()
+
+	c := newTestClient(t, srv)
+	if _, err := c.DownloadFile(context.Background(), testBot(), "X"); !errors.Is(err, ErrMessageNotFound) {
+		t.Fatalf("empty file_path err = %v, want ErrMessageNotFound", err)
+	}
+}
+
+func TestDownloadFileCDNNotFoundAndError(t *testing.T) {
+	// getFile resolves a path; the CDN download then returns 404.
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		switch {
+		case strings.HasSuffix(r.URL.Path, "/getFile"):
+			w.Header().Set("Content-Type", "application/json")
+			_, _ = io.WriteString(w, `{"ok":true,"result":{"file_id":"X","file_path":"docs/x.bin"}}`)
+		case strings.Contains(r.URL.Path, "/file/bot"):
+			w.WriteHeader(http.StatusNotFound)
+		}
+	}))
+	defer srv.Close()
+
+	c := newTestClient(t, srv)
+	if _, err := c.DownloadFile(context.Background(), testBot(), "X"); !errors.Is(err, ErrMessageNotFound) {
+		t.Fatalf("CDN 404 err = %v, want ErrMessageNotFound", err)
+	}
+
+	// Now a 500 from the CDN → a generic (non-not-found) error.
+	srv2 := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		switch {
+		case strings.HasSuffix(r.URL.Path, "/getFile"):
+			w.Header().Set("Content-Type", "application/json")
+			_, _ = io.WriteString(w, `{"ok":true,"result":{"file_id":"X","file_path":"docs/x.bin"}}`)
+		case strings.Contains(r.URL.Path, "/file/bot"):
+			w.WriteHeader(http.StatusInternalServerError)
+			_, _ = io.WriteString(w, "boom")
+		}
+	}))
+	defer srv2.Close()
+
+	c2 := newTestClient(t, srv2)
+	_, err := c2.DownloadFile(context.Background(), testBot(), "X")
+	if err == nil || errors.Is(err, ErrMessageNotFound) {
+		t.Fatalf("CDN 500 err = %v, want a generic download error", err)
+	}
+}
+
+func TestDecodeSendResultMalformed(t *testing.T) {
+	if _, err := decodeSendResult([]byte("not json")); err == nil {
+		t.Fatal("decodeSendResult of malformed JSON should error")
+	}
+	// A message without a document object leaves file ids empty (tolerated).
+	res, err := decodeSendResult([]byte(`{"message_id":7}`))
+	if err != nil {
+		t.Fatalf("decodeSendResult: %v", err)
+	}
+	if res.MessageID != 7 || res.FileID != "" {
+		t.Fatalf("decodeSendResult = %+v, want message_id=7, empty file id", res)
+	}
+}
+
+func TestSendByFileIDSuccess(t *testing.T) {
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if !strings.HasSuffix(r.URL.Path, "/sendDocument") {
+			t.Errorf("unexpected path %q", r.URL.Path)
+		}
+		if err := r.ParseForm(); err != nil {
+			t.Fatalf("parse form: %v", err)
+		}
+		if r.FormValue("document") != "FID_REUSE" {
+			t.Errorf("document = %q, want FID_REUSE", r.FormValue("document"))
+		}
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = io.WriteString(w, `{"ok":true,"result":{"message_id":9,"document":{"file_id":"NEW","file_unique_id":"U"}}}`)
+	}))
+	defer srv.Close()
+
+	c := newTestClient(t, srv)
+	res, err := c.SendByFileID(context.Background(), testBot(), -100, "FID_REUSE")
+	if err != nil {
+		t.Fatalf("SendByFileID: %v", err)
+	}
+	if res.MessageID != 9 || res.FileID != "NEW" {
+		t.Fatalf("SendByFileID = %+v, want message_id=9 file_id=NEW", res)
+	}
+}
+
+func TestDeleteMessageGenericErrorPropagates(t *testing.T) {
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = io.WriteString(w, `{"ok":false,"error_code":500,"description":"Internal Server Error"}`)
+	}))
+	defer srv.Close()
+
+	c := newTestClient(t, srv)
+	if err := c.DeleteMessage(context.Background(), testBot(), -100, 1); err == nil {
+		t.Fatal("DeleteMessage with a server error should propagate (only not-found is swallowed)")
+	}
+}

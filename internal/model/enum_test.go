@@ -2,6 +2,8 @@ package model_test
 
 import (
 	"database/sql/driver"
+	"errors"
+	"strings"
 	"testing"
 
 	"github.com/ulbwa/tgwebdav/internal/model"
@@ -115,5 +117,82 @@ func TestBlobStateScanInt64(t *testing.T) {
 		if got != c.want {
 			t.Errorf("BlobState.Scan(%v) = %v, want %v", c.val, got, c.want)
 		}
+	}
+}
+
+// TestParseBlobStateInvalid verifies the error branch of ParseBlobState (an
+// unknown name) wraps the sentinel ErrInvalidBlobState.
+func TestParseBlobStateInvalid(t *testing.T) {
+	_, err := model.ParseBlobState("nope")
+	if !errors.Is(err, model.ErrInvalidBlobState) {
+		t.Fatalf("ParseBlobState(nope) err = %v, want ErrInvalidBlobState", err)
+	}
+}
+
+// TestParseNodeStateInvalid verifies the error branch of ParseNodeState.
+func TestParseNodeStateInvalid(t *testing.T) {
+	_, err := model.ParseNodeState("nope")
+	if !errors.Is(err, model.ErrInvalidNodeState) {
+		t.Fatalf("ParseNodeState(nope) err = %v, want ErrInvalidNodeState", err)
+	}
+}
+
+// TestBlobStateIsValid covers both branches of BlobState.IsValid.
+func TestBlobStateIsValid(t *testing.T) {
+	for _, s := range model.BlobStateValues() {
+		if !s.IsValid() {
+			t.Errorf("BlobState %v should be valid", s)
+		}
+	}
+	if model.BlobState(99).IsValid() {
+		t.Error("BlobState(99) should not be valid")
+	}
+}
+
+// TestNodeStateIsValid covers both branches of NodeState.IsValid.
+func TestNodeStateIsValid(t *testing.T) {
+	for _, s := range model.NodeStateValues() {
+		if !s.IsValid() {
+			t.Errorf("NodeState %v should be valid", s)
+		}
+	}
+	if model.NodeState(99).IsValid() {
+		t.Error("NodeState(99) should not be valid")
+	}
+}
+
+// TestBlobStateStringFallback covers the unknown-value branch of String, which
+// returns the BlobState(%d) placeholder rather than panicking.
+func TestBlobStateStringFallback(t *testing.T) {
+	if got := model.BlobState(42).String(); !strings.Contains(got, "42") {
+		t.Errorf("BlobState(42).String() = %q, want it to contain 42", got)
+	}
+	if got := model.NodeState(42).String(); !strings.Contains(got, "42") {
+		t.Errorf("NodeState(42).String() = %q, want it to contain 42", got)
+	}
+}
+
+// TestBlobStateScanNilAndBytes covers the nil and []byte scan branches.
+func TestBlobStateScanNilAndBytes(t *testing.T) {
+	got := model.BlobStatePermUnavailable
+	if err := got.Scan(nil); err != nil {
+		t.Fatalf("Scan(nil) err = %v", err)
+	}
+	if got != model.BlobStateOpen { // BlobState(0)
+		t.Errorf("Scan(nil) = %v, want BlobStateOpen (zero value)", got)
+	}
+
+	var fromBytes model.BlobState
+	if err := fromBytes.Scan([]byte("stored")); err != nil {
+		t.Fatalf("Scan([]byte) err = %v", err)
+	}
+	if fromBytes != model.BlobStateStored {
+		t.Errorf("Scan([]byte(stored)) = %v, want BlobStateStored", fromBytes)
+	}
+
+	// Scanning an invalid string surfaces the parse error.
+	var bad model.BlobState
+	if err := bad.Scan("bogus"); !errors.Is(err, model.ErrInvalidBlobState) {
+		t.Errorf("Scan(bogus) err = %v, want ErrInvalidBlobState", err)
 	}
 }
