@@ -56,6 +56,12 @@ func runServer(rootCtx context.Context, cfg *serverConfig) error {
 		"webdav_addr", cfg.WebDAVAddr, "mgmt_addr", cfg.MgmtAddr,
 		"cache_dir", cfg.CacheDir, "cache_size", cfg.CacheSize)
 
+	// The secret key encrypts bot tokens at rest. Without it, bots cannot be
+	// added via the Management API (the only way to add them now).
+	if len(cfg.SecretKey) == 0 {
+		logger.Warn("no secret key set; adding bots via the Management API will fail until --secret-key / TGWEBDAV_SECRET_KEY is provided")
+	}
+
 	// 1. Migrations (fail fast). Keep auto-migrate-on-boot.
 	if err := runMigrations(cfg.DSN, logger); err != nil {
 		return fmt.Errorf("migrations: %w", err)
@@ -149,8 +155,13 @@ func runServer(rootCtx context.Context, cfg *serverConfig) error {
 		nodeRepo, extentRepo, walRepo, blobRepo, tx, blobReader, limiter, settingsSvc, statRecorder, logger,
 	)
 
-	// 7. Seed bots/channels and bootstrap the first admin (services only).
-	seed(workerCtx, cfg, userSvc, channelSvc, botSvc, logger)
+	// 7. Recompute channel availability from current DB membership (correct after
+	// a restart; harmless with zero bots/channels) and bootstrap the first admin.
+	// Bots and channels are added exclusively via the Management API.
+	if err := channelSvc.ReevaluateAvailability(workerCtx); err != nil {
+		logger.Warn("reevaluate channel availability", "err", err)
+	}
+	bootstrapAdmin(workerCtx, cfg, userSvc, logger)
 
 	// 8. Background workers.
 	packer := service.NewPacker(
@@ -246,40 +257,16 @@ func startWorker(wg *sync.WaitGroup, fn func()) {
 	}()
 }
 
-// seed idempotently registers the configured channels and bots and bootstraps
-// the first administrator when no users exist. It drives the services only
-// (channelSvc.Add, botSvc.Add, channelSvc.ReevaluateAvailability, userSvc). As
+// bootstrapAdmin creates the first administrator from --first-user /
+// TGWEBDAV_FIRST_USER, but only when no users exist yet. Bots and channels are
+// no longer seeded here; they are added exclusively via the Management API. As
 // in the old seed.go, failures are logged but never abort startup.
-func seed(
+func bootstrapAdmin(
 	ctx context.Context,
 	cfg *serverConfig,
 	userSvc *service.UserService,
-	channelSvc *service.ChannelService,
-	botSvc *service.BotService,
 	logger *slog.Logger,
 ) {
-	for _, id := range cfg.ChannelIDs {
-		ch, err := channelSvc.Add(ctx, id)
-		if err != nil {
-			logger.Warn("seed channel failed", "bare_id", id, "err", err)
-			continue
-		}
-		logger.Info("seeded channel", "bare_id", id, "chat_id", ch.TGChatID, "available", ch.Available)
-	}
-
-	for _, token := range cfg.BotTokens {
-		b, err := botSvc.Add(ctx, token)
-		if err != nil {
-			logger.Warn("seed bot failed", "err", err)
-			continue
-		}
-		logger.Info("seeded bot", "username", b.Username, "id", b.ID)
-	}
-
-	if err := channelSvc.ReevaluateAvailability(ctx); err != nil {
-		logger.Warn("reevaluate channel availability", "err", err)
-	}
-
 	users, err := userSvc.List(ctx)
 	if err != nil {
 		logger.Error("list users", "err", err)

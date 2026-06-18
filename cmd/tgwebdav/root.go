@@ -41,6 +41,7 @@ func init() {
 	sf.String("cache-dir", "", "blob cache directory; default user cache dir (env TGWEBDAV_CACHE_DIR)")
 	sf.String("cache-size", "1GiB", "blob cache size, e.g. 512MiB, 2GiB (env TGWEBDAV_CACHE_SIZE)")
 	sf.String("first-user", "", "bootstrap admin as login:password (env TGWEBDAV_FIRST_USER)")
+	sf.String("secret-key", "", "secret used to derive the key encrypting bot tokens (env TGWEBDAV_SECRET_KEY)")
 
 	rootCmd.AddCommand(serverCmd, migrateCmd)
 }

@@ -9,7 +9,6 @@ import (
 	"strconv"
 	"strings"
 
-	"github.com/samber/lo"
 	"github.com/spf13/cobra"
 	"github.com/spf13/viper"
 )
@@ -31,9 +30,6 @@ type serverConfig struct {
 
 	FirstUser string // "login:password" used to bootstrap the first admin
 	SecretKey []byte // 32-byte AES key derived from TGWEBDAV_SECRET_KEY
-
-	BotTokens  []string // bot tokens to seed
-	ChannelIDs []int64  // bare channel ids to seed
 
 	LogLevel string // debug|info|warn|error
 }
@@ -105,10 +101,6 @@ func loadServerConfig(cmd *cobra.Command) (*serverConfig, error) {
 	if err != nil {
 		return nil, err
 	}
-	// Secret material has no flag (env-only); bind it explicitly.
-	for _, k := range []string{"secret-key", "bot-tokens", "channel-ids"} {
-		_ = v.BindEnv(k)
-	}
 
 	cfg := &serverConfig{
 		DSN:        v.GetString("dsn"),
@@ -117,7 +109,6 @@ func loadServerConfig(cmd *cobra.Command) (*serverConfig, error) {
 		CacheDir:   v.GetString("cache-dir"),
 		FirstUser:  v.GetString("first-user"),
 		LogLevel:   v.GetString("log-level"),
-		BotTokens:  splitNonEmpty(v.GetString("bot-tokens")),
 	}
 
 	if cfg.DSN == "" {
@@ -138,19 +129,9 @@ func loadServerConfig(cmd *cobra.Command) (*serverConfig, error) {
 		cfg.CacheDir = filepath.Join(base, "tgwebdav")
 	}
 
-	for _, raw := range splitNonEmpty(v.GetString("channel-ids")) {
-		id, err := strconv.ParseInt(strings.TrimSpace(raw), 10, 64)
-		if err != nil {
-			return nil, fmt.Errorf("invalid channel id %q: %w", raw, err)
-		}
-		cfg.ChannelIDs = append(cfg.ChannelIDs, id)
-	}
-
 	if sk := v.GetString("secret-key"); sk != "" {
 		sum := sha256.Sum256([]byte(sk))
 		cfg.SecretKey = sum[:]
-	} else if len(cfg.BotTokens) > 0 {
-		return nil, fmt.Errorf("TGWEBDAV_SECRET_KEY is required when bot tokens are configured")
 	}
 
 	if cfg.FirstUser != "" && !strings.Contains(cfg.FirstUser, ":") {
@@ -186,13 +167,6 @@ func (c *serverConfig) firstUserParts() (login, password string, ok bool) {
 	}
 	login, password, _ = strings.Cut(c.FirstUser, ":")
 	return login, password, login != "" && password != ""
-}
-
-func splitNonEmpty(s string) []string {
-	trimmed := lo.Map(strings.Split(s, ","), func(p string, _ int) string {
-		return strings.TrimSpace(p)
-	})
-	return lo.Filter(trimmed, func(p string, _ int) bool { return p != "" })
 }
 
 // parseSize parses a human byte size such as "512", "512MiB", "2GiB", "1gb".
