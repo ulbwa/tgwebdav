@@ -67,7 +67,7 @@ type readerExtentStore interface {
 
 // readerTelegram is the slice of the Telegram Bot API the reader needs. It
 // returns model.TGSendResult and the typed errors *telegram.RateLimitError,
-// telegram.ErrTelegramNotFound and telegram.ErrTelegramForbidden.
+// telegram.ErrMessageNotFound and telegram.ErrForbidden.
 type readerTelegram interface {
 	DownloadFile(ctx context.Context, bot *model.Bot, fileID string) ([]byte, error)
 	SendByFileID(ctx context.Context, bot *model.Bot, chatID int64, fileID string) (model.TGSendResult, error)
@@ -246,9 +246,9 @@ type candidate struct {
 //     fresh file_id, downloads it, best-effort deletes the forwarded copy and
 //     caches the new file_id.
 //   - A *telegram.RateLimitError parks the bot (SetUnavailableUntil) and moves on.
-//   - telegram.ErrTelegramForbidden records the bot as a non-member and moves on.
+//   - telegram.ErrForbidden records the bot as a non-member and moves on.
 //
-// Only when forward-recovery itself returns telegram.ErrTelegramNotFound do we
+// Only when forward-recovery itself returns telegram.ErrMessageNotFound do we
 // conclude the underlying message is permanently gone: the blob is marked
 // perm_unavailable and every node that referenced solely this blob is
 // cascade-deleted, inside a single transaction, with EventBlobPermDeleted and
@@ -395,7 +395,7 @@ func (r *BlobReader) candidates(ctx context.Context, blob *model.Blob) ([]candid
 
 // tryCandidate attempts to read the blob with one bot. It returns the bytes on
 // success. The bool result reports a definitive "message gone" outcome (only
-// set when forward-recovery returns ErrTelegramNotFound); on a transient
+// set when forward-recovery returns ErrMessageNotFound); on a transient
 // failure it is false and err is the transient error.
 func (r *BlobReader) tryCandidate(
 	ctx context.Context,
@@ -410,7 +410,7 @@ func (r *BlobReader) tryCandidate(
 		switch {
 		case err == nil:
 			return data, false, nil
-		case errors.Is(err, telegram.ErrTelegramNotFound):
+		case errors.Is(err, telegram.ErrMessageNotFound):
 			// STALE cached file_id: drop just this row and fall through to
 			// recovery. Do NOT perm-delete the blob on this signal.
 			r.logger.InfoContext(ctx, "blob: cached file_id stale, recovering",
@@ -421,7 +421,7 @@ func (r *BlobReader) tryCandidate(
 		case isRateLimit(err):
 			r.parkBot(ctx, c.bot, err)
 			return nil, false, err
-		case errors.Is(err, telegram.ErrTelegramForbidden):
+		case errors.Is(err, telegram.ErrForbidden):
 			r.recordNonMember(ctx, c.bot, channel)
 			return nil, false, err
 		default:
@@ -437,13 +437,13 @@ func (r *BlobReader) tryCandidate(
 	switch {
 	case err == nil:
 		// proceed to download
-	case errors.Is(err, telegram.ErrTelegramNotFound):
+	case errors.Is(err, telegram.ErrMessageNotFound):
 		// The message itself is gone — definitive.
 		return nil, true, err
 	case isRateLimit(err):
 		r.parkBot(ctx, c.bot, err)
 		return nil, false, err
-	case errors.Is(err, telegram.ErrTelegramForbidden):
+	case errors.Is(err, telegram.ErrForbidden):
 		r.recordNonMember(ctx, c.bot, channel)
 		return nil, false, err
 	default:
@@ -456,14 +456,14 @@ func (r *BlobReader) tryCandidate(
 		// Best-effort cleanup of the forwarded copy even on download failure.
 		r.bestEffortDelete(ctx, c.bot, channel.TGChatID, res.MessageID)
 		switch {
-		case errors.Is(err, telegram.ErrTelegramNotFound):
+		case errors.Is(err, telegram.ErrMessageNotFound):
 			// We just forwarded and got a fresh file_id; a not-found here is a
 			// transient/odd state, not proof the original is gone. Try next bot.
 			return nil, false, fmt.Errorf("blob: download recovered file_id: %w", err)
 		case isRateLimit(err):
 			r.parkBot(ctx, c.bot, err)
 			return nil, false, err
-		case errors.Is(err, telegram.ErrTelegramForbidden):
+		case errors.Is(err, telegram.ErrForbidden):
 			r.recordNonMember(ctx, c.bot, channel)
 			return nil, false, err
 		default:

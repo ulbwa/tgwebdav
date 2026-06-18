@@ -173,7 +173,7 @@ func (s *MaintenanceService) reap(ctx context.Context) {
 
 		err = s.tg.DeleteMessage(ctx, bot, channel.TGChatID, b.MessageID)
 		switch {
-		case err == nil, errors.Is(err, telegram.ErrTelegramNotFound):
+		case err == nil, errors.Is(err, telegram.ErrMessageNotFound):
 			// Deleted, or already gone — drop the row either way.
 		default:
 			var rl *telegram.RateLimitError

@@ -606,7 +606,7 @@ func (p *Packer) upload(ctx context.Context, channel *model.Channel, data []byte
 			until := time.Now().Add(rl.RetryAfter)
 			_ = p.botRepo.SetUnavailableUntil(ctx, bot.ID, &until)
 			_ = p.events.Log(ctx, model.EventBotUnavailable, "rate limited on upload", bot.ID.String())
-		case errors.Is(err, telegram.ErrTelegramForbidden):
+		case errors.Is(err, telegram.ErrForbidden):
 			_ = p.botChans.Upsert(ctx, &model.BotChannel{BotID: bot.ID, ChannelID: channel.ID, Member: false, CheckedAt: time.Now()})
 		default:
 			_ = p.events.Log(ctx, model.EventUploadFailed, err.Error(), channel.ID.String())

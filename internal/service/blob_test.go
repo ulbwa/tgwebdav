@@ -349,7 +349,7 @@ func (t *fakeTG) DownloadFile(_ context.Context, _ *model.Bot, fileID string) ([
 	t.downloadConc--
 	t.mu.Unlock()
 	if !ok {
-		return nil, telegram.ErrTelegramNotFound
+		return nil, telegram.ErrMessageNotFound
 	}
 	return r.data, r.err
 }
@@ -366,7 +366,7 @@ func (t *fakeTG) ForwardMessage(_ context.Context, bot *model.Bot, _, _, _ int64
 	f, ok := t.forwardByBot[bot.Username]
 	t.mu.Unlock()
 	if !ok {
-		return model.TGSendResult{}, telegram.ErrTelegramNotFound
+		return model.TGSendResult{}, telegram.ErrMessageNotFound
 	}
 	return f.res, f.err
 }
@@ -582,7 +582,7 @@ func TestReadBlob_StaleFileIDFallsBackToRecovery(t *testing.T) {
 		t.Fatal(err)
 	}
 	// Cached file_id download returns not-found -> stale.
-	h.tg.downloadByFileID[staleID] = tgResult{err: telegram.ErrTelegramNotFound}
+	h.tg.downloadByFileID[staleID] = tgResult{err: telegram.ErrMessageNotFound}
 
 	// Forward-recovery succeeds and yields a fresh file_id.
 	const freshID = "FILE_FRESH"
@@ -631,8 +631,8 @@ func TestReadBlob_PermNotFound_CachedThenRecovery_CascadeDeletes(t *testing.T) {
 		t.Fatal(err)
 	}
 	// Cached download not found (stale) AND forward also not found (gone).
-	h.tg.downloadByFileID[staleID] = tgResult{err: telegram.ErrTelegramNotFound}
-	h.tg.forwardByBot[bot.Username] = tgForward{err: telegram.ErrTelegramNotFound}
+	h.tg.downloadByFileID[staleID] = tgResult{err: telegram.ErrMessageNotFound}
+	h.tg.forwardByBot[bot.Username] = tgForward{err: telegram.ErrMessageNotFound}
 
 	// A node lives solely on this blob.
 	soleNode := uuid.New()
@@ -668,7 +668,7 @@ func TestReadBlob_PermNotFound_RecoveryOnlyPath(t *testing.T) {
 	blob := h.addStoredBlob(10)
 
 	// No cached file_id; recovery path used directly. Forward not found -> gone.
-	h.tg.forwardByBot[bot.Username] = tgForward{err: telegram.ErrTelegramNotFound}
+	h.tg.forwardByBot[bot.Username] = tgForward{err: telegram.ErrMessageNotFound}
 
 	soleNode := uuid.New()
 	h.extents.solelyOnBlob[blob.ID] = []uuid.UUID{soleNode}
@@ -730,7 +730,7 @@ func TestReadBlob_ForbiddenMovesToNextBotAndRecordsNonMember(t *testing.T) {
 	good := h.addBot("good2")
 	blob := h.addStoredBlob(10)
 
-	h.tg.forwardByBot[forbidden.Username] = tgForward{err: telegram.ErrTelegramForbidden}
+	h.tg.forwardByBot[forbidden.Username] = tgForward{err: telegram.ErrForbidden}
 	const freshID = "FILE_OK2"
 	want := []byte("ok-bytes")
 	h.tg.forwardByBot[good.Username] = tgForward{res: model.TGSendResult{MessageID: 7, FileID: freshID}}

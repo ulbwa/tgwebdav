@@ -264,7 +264,7 @@ func TestReapRateLimitParksBotAndStops(t *testing.T) {
 }
 
 // TestReapNotFoundStillDeletesRow verifies that a Telegram "message gone"
-// (ErrTelegramNotFound) is treated as already-deleted: the row is still removed
+// (ErrMessageNotFound) is treated as already-deleted: the row is still removed
 // and the event logged.
 func TestReapNotFoundStillDeletesRow(t *testing.T) {
 	h := newMaintHarness()
@@ -276,7 +276,7 @@ func TestReapNotFoundStillDeletesRow(t *testing.T) {
 
 	blobID := uuid.New()
 	h.blobs.collectable = []model.Blob{{ID: blobID, ChannelID: channelID, MessageID: 7}}
-	h.tg.deleteErr = telegram.ErrTelegramNotFound
+	h.tg.deleteErr = telegram.ErrMessageNotFound
 
 	h.svc().reap(ctx)
 

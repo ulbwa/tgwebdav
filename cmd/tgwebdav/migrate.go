@@ -4,7 +4,6 @@ import (
 	"fmt"
 	"log/slog"
 	"net/url"
-	"strings"
 
 	"github.com/amacneil/dbmate/v2/pkg/dbmate"
 	"github.com/spf13/cobra"
@@ -32,20 +31,6 @@ var migrateCmd = &cobra.Command{
 	},
 }
 
-// slogWriter adapts dbmate's io.Writer log output onto a *slog.Logger so
-// migration progress (e.g. "Applying: 20260616000001_init.sql") is emitted
-// through the project's standard structured logger.
-type slogWriter struct{ log *slog.Logger }
-
-func (w slogWriter) Write(p []byte) (int, error) {
-	for _, line := range strings.Split(string(p), "\n") {
-		if s := strings.TrimSpace(line); s != "" {
-			w.log.Info("dbmate: " + s)
-		}
-	}
-	return len(p), nil
-}
-
 // runMigrations applies all pending embedded migrations (migrations.FS) against
 // the database identified by dsn, creating the database if it does not yet exist
 // and failing fast on error. Progress is logged through logger (slog); a nil
@@ -66,7 +51,9 @@ func runMigrations(dsn string, logger *slog.Logger) error {
 	db.FS = migrations.FS
 	db.MigrationsDir = []string{"."}
 	db.AutoDumpSchema = false
-	db.Log = slogWriter{log: log}
+	// dbmate writes progress to an io.Writer; route it to slog at INFO via the
+	// stdlib bridge (each line becomes a record carrying the migrations attrs).
+	db.Log = slog.NewLogLogger(log.Handler(), slog.LevelInfo).Writer()
 
 	log.Info("running database migrations")
 	if err := db.CreateAndMigrate(); err != nil {

@@ -125,8 +125,8 @@ func TestDownloadFileNotFound(t *testing.T) {
 
 	c := newTestClient(t, srv)
 	_, err := c.DownloadFile(context.Background(), testBot(), "STALE_FID")
-	if !errors.Is(err, ErrTelegramNotFound) {
-		t.Fatalf("error = %v, want ErrTelegramNotFound", err)
+	if !errors.Is(err, ErrMessageNotFound) {
+		t.Fatalf("error = %v, want ErrMessageNotFound", err)
 	}
 }
 
@@ -319,8 +319,8 @@ func TestForbiddenMapping(t *testing.T) {
 
 	c := newTestClient(t, srv)
 	_, err := c.SendByFileID(context.Background(), testBot(), -100222, "FID")
-	if !errors.Is(err, ErrTelegramForbidden) {
-		t.Fatalf("error = %v, want ErrTelegramForbidden", err)
+	if !errors.Is(err, ErrForbidden) {
+		t.Fatalf("error = %v, want ErrForbidden", err)
 	}
 }
 
