@@ -3,6 +3,9 @@ package http
 import (
 	"net/http"
 
+	"github.com/samber/lo"
+
+	"github.com/ulbwa/tgwebdav/internal/model"
 	management "github.com/ulbwa/tgwebdav/pkg/openapi/management"
 )
 
@@ -13,10 +16,7 @@ func (h *Handler) ListBots(w http.ResponseWriter, r *http.Request) {
 		h.writeError(w, err)
 		return
 	}
-	out := make([]management.Bot, 0, len(bots))
-	for i := range bots {
-		out = append(out, toAPIBot(&bots[i]))
-	}
+	out := lo.Map(bots, func(b model.Bot, _ int) management.Bot { return toAPIBot(&b) })
 	h.writeJSON(w, http.StatusOK, out)
 }
 

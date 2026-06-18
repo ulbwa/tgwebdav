@@ -3,8 +3,11 @@ package http
 import (
 	"net/http"
 
+	"github.com/samber/lo"
+
 	management "github.com/ulbwa/tgwebdav/pkg/openapi/management"
 
+	"github.com/ulbwa/tgwebdav/internal/model"
 	"github.com/ulbwa/tgwebdav/internal/service"
 )
 
@@ -15,10 +18,7 @@ func (h *Handler) ListUsers(w http.ResponseWriter, r *http.Request) {
 		h.writeError(w, err)
 		return
 	}
-	out := make([]management.User, 0, len(users))
-	for i := range users {
-		out = append(out, toAPIUser(&users[i]))
-	}
+	out := lo.Map(users, func(u model.User, _ int) management.User { return toAPIUser(&u) })
 	h.writeJSON(w, http.StatusOK, out)
 }
 

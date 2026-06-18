@@ -9,6 +9,7 @@ import (
 	"time"
 
 	"github.com/google/uuid"
+	"github.com/samber/lo"
 
 	"github.com/ulbwa/tgwebdav/internal/client/telegram"
 	"github.com/ulbwa/tgwebdav/internal/model"
@@ -365,10 +366,9 @@ func (r *BlobReader) candidates(ctx context.Context, blob *model.Blob) ([]candid
 	if err != nil {
 		return nil, fmt.Errorf("blob: list cached file_ids for %s: %w", blob.ID, err)
 	}
-	fileIDByBot := make(map[uuid.UUID]string, len(files))
-	for _, f := range files {
-		fileIDByBot[f.BotID] = f.FileID
-	}
+	fileIDByBot := lo.Associate(files, func(f model.BlobBotFile) (uuid.UUID, string) {
+		return f.BotID, f.FileID
+	})
 
 	candidates := make([]candidate, 0, len(order))
 	added := make(map[uuid.UUID]bool, len(order))

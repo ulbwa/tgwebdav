@@ -7,6 +7,7 @@ import (
 
 	"github.com/google/uuid"
 	"github.com/jackc/pgx/v5/pgxpool"
+	"github.com/samber/lo"
 	"github.com/ulbwa/tgwebdav/internal/database"
 	"github.com/ulbwa/tgwebdav/internal/model"
 	"github.com/ulbwa/tgwebdav/internal/repository/sqlc"
@@ -120,11 +121,7 @@ func (r *ChannelRepository) List(ctx context.Context) ([]model.Channel, error) {
 	if err != nil {
 		return nil, fmt.Errorf("list channels: %w", translateError(err))
 	}
-	out := make([]model.Channel, len(ms))
-	for i := range ms {
-		out[i] = *channelToModel(ms[i])
-	}
-	return out, nil
+	return lo.Map(ms, func(m sqlc.Channel, _ int) model.Channel { return *channelToModel(m) }), nil
 }
 
 // IncrementCounter atomically adds delta to message_counter and returns the new

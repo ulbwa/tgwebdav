@@ -8,6 +8,7 @@ import (
 
 	"github.com/google/uuid"
 	"github.com/jackc/pgx/v5/pgxpool"
+	"github.com/samber/lo"
 	"github.com/ulbwa/tgwebdav/internal/database"
 	"github.com/ulbwa/tgwebdav/internal/model"
 	"github.com/ulbwa/tgwebdav/internal/repository/sqlc"
@@ -44,11 +45,7 @@ func blobRowToModel(row sqlc.Blob) model.Blob {
 
 // blobRowsToModel maps a slice of sqlc rows onto the model.
 func blobRowsToModel(rows []sqlc.Blob) []model.Blob {
-	out := make([]model.Blob, len(rows))
-	for i := range rows {
-		out[i] = blobRowToModel(rows[i])
-	}
-	return out
+	return lo.Map(rows, func(row sqlc.Blob, _ int) model.Blob { return blobRowToModel(row) })
 }
 
 // Create inserts a new blob, generating an id and created_at when unset (mirrors

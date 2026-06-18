@@ -7,6 +7,7 @@ import (
 
 	"github.com/google/uuid"
 	"github.com/jackc/pgx/v5/pgxpool"
+	"github.com/samber/lo"
 	"github.com/ulbwa/tgwebdav/internal/database"
 	"github.com/ulbwa/tgwebdav/internal/model"
 	"github.com/ulbwa/tgwebdav/internal/repository/sqlc"
@@ -73,11 +74,7 @@ func (r *BlobBotFileRepository) ListByBlob(ctx context.Context, blobID uuid.UUID
 	if err != nil {
 		return nil, fmt.Errorf("list blob_bot_files by blob: %w", translateError(err))
 	}
-	out := make([]model.BlobBotFile, len(ms))
-	for i := range ms {
-		out[i] = *blobBotFileToModel(ms[i])
-	}
-	return out, nil
+	return lo.Map(ms, func(m sqlc.BlobBotFile, _ int) model.BlobBotFile { return *blobBotFileToModel(m) }), nil
 }
 
 // DeleteByBlob removes all cached file_ids for a blob.

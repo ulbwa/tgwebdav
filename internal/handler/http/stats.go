@@ -4,6 +4,9 @@ import (
 	"net/http"
 	"time"
 
+	"github.com/samber/lo"
+
+	"github.com/ulbwa/tgwebdav/internal/model"
 	management "github.com/ulbwa/tgwebdav/pkg/openapi/management"
 )
 
@@ -35,9 +38,6 @@ func (h *Handler) QueryStats(w http.ResponseWriter, r *http.Request, params mana
 		h.writeError(w, err)
 		return
 	}
-	out := make([]management.StatPoint, 0, len(samples))
-	for i := range samples {
-		out = append(out, toAPIStatPoint(samples[i]))
-	}
+	out := lo.Map(samples, func(s model.StatSample, _ int) management.StatPoint { return toAPIStatPoint(s) })
 	h.writeJSON(w, http.StatusOK, out)
 }

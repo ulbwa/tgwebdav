@@ -11,6 +11,7 @@ import (
 	"github.com/jackc/pgx/v5"
 	"github.com/jackc/pgx/v5/pgtype"
 	"github.com/jackc/pgx/v5/pgxpool"
+	"github.com/samber/lo"
 
 	"github.com/ulbwa/tgwebdav/internal/database"
 	"github.com/ulbwa/tgwebdav/internal/model"
@@ -262,9 +263,5 @@ func nodeToModel(n sqlc.Node) *model.Node {
 }
 
 func nodesToModel(rows []sqlc.Node) []model.Node {
-	out := make([]model.Node, len(rows))
-	for i := range rows {
-		out[i] = *nodeToModel(rows[i])
-	}
-	return out
+	return lo.Map(rows, func(row sqlc.Node, _ int) model.Node { return *nodeToModel(row) })
 }

@@ -7,6 +7,7 @@ import (
 	"github.com/google/uuid"
 	"github.com/jackc/pgx/v5/pgtype"
 	"github.com/jackc/pgx/v5/pgxpool"
+	"github.com/samber/lo"
 	"github.com/ulbwa/tgwebdav/internal/database"
 	"github.com/ulbwa/tgwebdav/internal/model"
 	"github.com/ulbwa/tgwebdav/internal/repository/sqlc"
@@ -49,11 +50,7 @@ func (r *StatRepository) Query(ctx context.Context, metric, label string, from, 
 	if err != nil {
 		return nil, translateError(err)
 	}
-	out := make([]model.StatSample, len(rows))
-	for i, row := range rows {
-		out[i] = mapStat(row)
-	}
-	return out, nil
+	return lo.Map(rows, func(row sqlc.StatSample, _ int) model.StatSample { return mapStat(row) }), nil
 }
 
 // Latest returns the most recent sample for a metric/label, or ErrNotFound

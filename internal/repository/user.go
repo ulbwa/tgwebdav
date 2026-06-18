@@ -7,6 +7,7 @@ import (
 	"github.com/google/uuid"
 	"github.com/jackc/pgx/v5/pgtype"
 	"github.com/jackc/pgx/v5/pgxpool"
+	"github.com/samber/lo"
 	"github.com/ulbwa/tgwebdav/internal/database"
 	"github.com/ulbwa/tgwebdav/internal/model"
 	"github.com/ulbwa/tgwebdav/internal/repository/sqlc"
@@ -109,11 +110,7 @@ func (r *UserRepository) List(ctx context.Context) ([]model.User, error) {
 	if err != nil {
 		return nil, translateError(err)
 	}
-	out := make([]model.User, len(rows))
-	for i, row := range rows {
-		out[i] = mapUser(row)
-	}
-	return out, nil
+	return lo.Map(rows, func(row sqlc.User, _ int) model.User { return mapUser(row) }), nil
 }
 
 // Count returns the total number of users.

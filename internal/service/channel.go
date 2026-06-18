@@ -9,6 +9,7 @@ import (
 	"time"
 
 	"github.com/google/uuid"
+	"github.com/samber/lo"
 
 	"github.com/ulbwa/tgwebdav/internal/model"
 )
@@ -246,10 +247,9 @@ func (s *ChannelService) eligibleChannels(ctx context.Context) ([]model.Channel,
 		return nil, fmt.Errorf("list bots: %w", err)
 	}
 	now := time.Now()
-	usable := make(map[uuid.UUID]bool, len(bots))
-	for _, b := range bots {
-		usable[b.ID] = b.Available(now)
-	}
+	usable := lo.Associate(bots, func(b model.Bot) (uuid.UUID, bool) {
+		return b.ID, b.Available(now)
+	})
 
 	var eligible []model.Channel
 	for _, ch := range channels {

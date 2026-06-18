@@ -6,6 +6,7 @@ import (
 
 	"github.com/google/uuid"
 	"github.com/jackc/pgx/v5/pgxpool"
+	"github.com/samber/lo"
 	"github.com/ulbwa/tgwebdav/internal/database"
 	"github.com/ulbwa/tgwebdav/internal/model"
 	"github.com/ulbwa/tgwebdav/internal/repository/sqlc"
@@ -73,11 +74,7 @@ func (r *extentRepository) ListByNode(ctx context.Context, nodeID uuid.UUID) ([]
 	if err != nil {
 		return nil, fmt.Errorf("list extents by node: %w", translateError(err))
 	}
-	out := make([]model.Extent, len(rows))
-	for i := range rows {
-		out[i] = extentRowToModel(rows[i])
-	}
-	return out, nil
+	return lo.Map(rows, func(row sqlc.Extent, _ int) model.Extent { return extentRowToModel(row) }), nil
 }
 
 // DeleteByNode removes all extents of a node.

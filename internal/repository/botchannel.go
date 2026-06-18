@@ -7,6 +7,7 @@ import (
 
 	"github.com/google/uuid"
 	"github.com/jackc/pgx/v5/pgxpool"
+	"github.com/samber/lo"
 	"github.com/ulbwa/tgwebdav/internal/database"
 	"github.com/ulbwa/tgwebdav/internal/model"
 	"github.com/ulbwa/tgwebdav/internal/repository/sqlc"
@@ -103,9 +104,5 @@ func (r *BotChannelRepository) DeleteByChannel(ctx context.Context, channelID uu
 
 // botChannelsToModel maps a slice of sqlc rows into model values.
 func botChannelsToModel(ms []sqlc.BotChannel) []model.BotChannel {
-	out := make([]model.BotChannel, len(ms))
-	for i := range ms {
-		out[i] = *botChannelToModel(ms[i])
-	}
-	return out
+	return lo.Map(ms, func(m sqlc.BotChannel, _ int) model.BotChannel { return *botChannelToModel(m) })
 }

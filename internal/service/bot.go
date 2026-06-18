@@ -19,6 +19,7 @@ import (
 	"time"
 
 	"github.com/google/uuid"
+	"github.com/samber/lo"
 
 	"github.com/ulbwa/tgwebdav/internal/model"
 	"github.com/ulbwa/tgwebdav/internal/repository"
@@ -328,12 +329,10 @@ func (s *BotService) eligibleBots(ctx context.Context, channelID uuid.UUID) ([]m
 	if err != nil {
 		return nil, fmt.Errorf("list bot channels for %s: %w", channelID, err)
 	}
-	memberIDs := make(map[uuid.UUID]struct{}, len(members))
-	for _, m := range members {
-		if m.Member {
-			memberIDs[m.BotID] = struct{}{}
-		}
-	}
+	memberIDs := lo.Associate(
+		lo.Filter(members, func(m model.BotChannel, _ int) bool { return m.Member }),
+		func(m model.BotChannel) (uuid.UUID, struct{}) { return m.BotID, struct{}{} },
+	)
 	if len(memberIDs) == 0 {
 		return nil, nil
 	}
@@ -344,15 +343,10 @@ func (s *BotService) eligibleBots(ctx context.Context, channelID uuid.UUID) ([]m
 	}
 
 	now := time.Now()
-	var eligible []model.Bot
-	for _, b := range bots {
-		if _, ok := memberIDs[b.ID]; !ok {
-			continue
-		}
-		if b.Available(now) {
-			eligible = append(eligible, b)
-		}
-	}
+	eligible := lo.Filter(bots, func(b model.Bot, _ int) bool {
+		_, ok := memberIDs[b.ID]
+		return ok && b.Available(now)
+	})
 	return eligible, nil
 }
 
@@ -394,10 +388,9 @@ func reevaluateAvailability(
 	}
 
 	// enabled[botID] reports whether a bot is currently enabled.
-	enabled := make(map[uuid.UUID]bool, len(bs))
-	for _, b := range bs {
-		enabled[b.ID] = b.Enabled
-	}
+	enabled := lo.Associate(bs, func(b model.Bot) (uuid.UUID, bool) {
+		return b.ID, b.Enabled
+	})
 
 	for _, ch := range chs {
 		available, err := channelHasEnabledMember(ctx, bcs, ch.ID, enabled)
@@ -420,12 +413,9 @@ func channelHasEnabledMember(ctx context.Context, bcs botChannelStore, channelID
 	if err != nil {
 		return false, fmt.Errorf("list bot channels for %s: %w", channelID, err)
 	}
-	for _, m := range members {
-		if m.Member && enabled[m.BotID] {
-			return true, nil
-		}
-	}
-	return false, nil
+	return lo.SomeBy(members, func(m model.BotChannel) bool {
+		return m.Member && enabled[m.BotID]
+	}), nil
 }
 
 // channelHasUsableMember reports whether the channel has at least one member bot
@@ -438,12 +428,9 @@ func channelHasUsableMember(ctx context.Context, bcs botChannelStore, channelID 
 	if err != nil {
 		return false, fmt.Errorf("list bot channels for %s: %w", channelID, err)
 	}
-	for _, m := range members {
-		if m.Member && usable[m.BotID] {
-			return true, nil
-		}
-	}
-	return false, nil
+	return lo.SomeBy(members, func(m model.BotChannel) bool {
+		return m.Member && usable[m.BotID]
+	}), nil
 }
 
 // applyChannelAvailability persists the channel's new availability and the

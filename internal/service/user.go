@@ -9,6 +9,7 @@ import (
 	"time"
 
 	"github.com/google/uuid"
+	"github.com/samber/lo"
 
 	"github.com/ulbwa/tgwebdav/internal/model"
 	"github.com/ulbwa/tgwebdav/internal/repository"
@@ -180,13 +181,7 @@ func (s *UserService) DeleteToken(ctx context.Context, userID, tokenID uuid.UUID
 	if err != nil {
 		return fmt.Errorf("list tokens for user %s: %w", userID, err)
 	}
-	found := false
-	for i := range tokens {
-		if tokens[i].ID == tokenID {
-			found = true
-			break
-		}
-	}
+	found := lo.ContainsBy(tokens, func(t model.APIToken) bool { return t.ID == tokenID })
 	if !found {
 		return fmt.Errorf("token %s not owned by user %s: %w", tokenID, userID, repository.ErrNotFound)
 	}

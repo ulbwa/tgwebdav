@@ -3,6 +3,9 @@ package http
 import (
 	"net/http"
 
+	"github.com/samber/lo"
+
+	"github.com/ulbwa/tgwebdav/internal/model"
 	management "github.com/ulbwa/tgwebdav/pkg/openapi/management"
 )
 
@@ -14,10 +17,7 @@ func (h *Handler) ListUserTokens(w http.ResponseWriter, r *http.Request, userId 
 		h.writeError(w, err)
 		return
 	}
-	out := make([]management.APIToken, 0, len(tokens))
-	for i := range tokens {
-		out = append(out, toAPIToken(&tokens[i]))
-	}
+	out := lo.Map(tokens, func(t model.APIToken, _ int) management.APIToken { return toAPIToken(&t) })
 	h.writeJSON(w, http.StatusOK, out)
 }
 

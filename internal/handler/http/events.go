@@ -3,6 +3,9 @@ package http
 import (
 	"net/http"
 
+	"github.com/samber/lo"
+
+	"github.com/ulbwa/tgwebdav/internal/model"
 	management "github.com/ulbwa/tgwebdav/pkg/openapi/management"
 )
 
@@ -33,9 +36,6 @@ func (h *Handler) ListEvents(w http.ResponseWriter, r *http.Request, params mana
 		h.writeError(w, err)
 		return
 	}
-	out := make([]management.Event, 0, len(events))
-	for i := range events {
-		out = append(out, toAPIEvent(events[i]))
-	}
+	out := lo.Map(events, func(e model.Event, _ int) management.Event { return toAPIEvent(e) })
 	h.writeJSON(w, http.StatusOK, management.EventPage{Events: out, Total: total})
 }

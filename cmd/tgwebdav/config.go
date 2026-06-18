@@ -9,6 +9,7 @@ import (
 	"strconv"
 	"strings"
 
+	"github.com/samber/lo"
 	"github.com/spf13/cobra"
 	"github.com/spf13/viper"
 )
@@ -188,13 +189,10 @@ func (c *serverConfig) firstUserParts() (login, password string, ok bool) {
 }
 
 func splitNonEmpty(s string) []string {
-	var out []string
-	for _, p := range strings.Split(s, ",") {
-		if p = strings.TrimSpace(p); p != "" {
-			out = append(out, p)
-		}
-	}
-	return out
+	trimmed := lo.Map(strings.Split(s, ","), func(p string, _ int) string {
+		return strings.TrimSpace(p)
+	})
+	return lo.Filter(trimmed, func(p string, _ int) bool { return p != "" })
 }
 
 // parseSize parses a human byte size such as "512", "512MiB", "2GiB", "1gb".

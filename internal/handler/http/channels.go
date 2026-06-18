@@ -3,6 +3,9 @@ package http
 import (
 	"net/http"
 
+	"github.com/samber/lo"
+
+	"github.com/ulbwa/tgwebdav/internal/model"
 	management "github.com/ulbwa/tgwebdav/pkg/openapi/management"
 )
 
@@ -13,10 +16,7 @@ func (h *Handler) ListChannels(w http.ResponseWriter, r *http.Request) {
 		h.writeError(w, err)
 		return
 	}
-	out := make([]management.Channel, 0, len(channels))
-	for i := range channels {
-		out = append(out, toAPIChannel(&channels[i]))
-	}
+	out := lo.Map(channels, func(c model.Channel, _ int) management.Channel { return toAPIChannel(&c) })
 	h.writeJSON(w, http.StatusOK, out)
 }
 

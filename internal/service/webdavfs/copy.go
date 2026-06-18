@@ -8,6 +8,7 @@ import (
 	"time"
 
 	"github.com/google/uuid"
+	"github.com/samber/lo"
 
 	"github.com/ulbwa/tgwebdav/internal/model"
 	"github.com/ulbwa/tgwebdav/internal/repository"
@@ -93,13 +94,8 @@ func (f *FileSystem) subtreeSize(ctx context.Context, userID uuid.UUID, p string
 	if err != nil {
 		return 0, err
 	}
-	var sum int64
-	for i := range nodes {
-		if !nodes[i].IsDir {
-			sum += nodes[i].Size
-		}
-	}
-	return sum, nil
+	files := lo.Filter(nodes, func(n model.Node, _ int) bool { return !n.IsDir })
+	return lo.SumBy(files, func(n model.Node) int64 { return n.Size }), nil
 }
 
 func (f *FileSystem) copyNode(ctx context.Context, userID uuid.UUID, srcNode *model.Node, dstPath string, dstParentID *uuid.UUID, recursive bool) error {

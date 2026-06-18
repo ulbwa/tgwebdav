@@ -9,6 +9,7 @@ import (
 	"time"
 
 	"github.com/google/uuid"
+	"github.com/samber/lo"
 
 	"github.com/ulbwa/tgwebdav/internal/client/telegram"
 	"github.com/ulbwa/tgwebdav/internal/model"
@@ -261,11 +262,7 @@ func (p *Packer) workerCount(ctx context.Context) int {
 	if n <= 0 {
 		bots, err := p.botSvc.List(ctx)
 		if err == nil {
-			for _, b := range bots {
-				if b.Enabled {
-					n++
-				}
-			}
+			n = lo.CountBy(bots, func(b model.Bot) bool { return b.Enabled })
 		}
 	}
 	if n < 1 {
