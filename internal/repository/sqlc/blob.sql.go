@@ -44,22 +44,23 @@ func (q *Queries) CountBlobs(ctx context.Context) (int64, error) {
 
 const createBlob = `-- name: CreateBlob :exec
 INSERT INTO blobs (
-    id, channel_id, message_id, message_seq, size, state, refcount, created_at, sealed_at
+    id, channel_id, message_id, message_seq, size, content_hash, state, refcount, created_at, sealed_at
 ) VALUES (
-    $1, $2, $3, $4, $5, $6, $7, $8, $9
+    $1, $2, $3, $4, $5, $6, $7, $8, $9, $10
 )
 `
 
 type CreateBlobParams struct {
-	ID         uuid.UUID
-	ChannelID  uuid.UUID
-	MessageID  int64
-	MessageSeq int64
-	Size       int64
-	State      int32
-	Refcount   int64
-	CreatedAt  pgtype.Timestamptz
-	SealedAt   pgtype.Timestamptz
+	ID          uuid.UUID
+	ChannelID   uuid.UUID
+	MessageID   int64
+	MessageSeq  int64
+	Size        int64
+	ContentHash []byte
+	State       int32
+	Refcount    int64
+	CreatedAt   pgtype.Timestamptz
+	SealedAt    pgtype.Timestamptz
 }
 
 func (q *Queries) CreateBlob(ctx context.Context, arg CreateBlobParams) error {
@@ -69,6 +70,7 @@ func (q *Queries) CreateBlob(ctx context.Context, arg CreateBlobParams) error {
 		arg.MessageID,
 		arg.MessageSeq,
 		arg.Size,
+		arg.ContentHash,
 		arg.State,
 		arg.Refcount,
 		arg.CreatedAt,
@@ -116,7 +118,7 @@ func (q *Queries) EvictBlobsOlderThan(ctx context.Context, arg EvictBlobsOlderTh
 }
 
 const getBlobByID = `-- name: GetBlobByID :one
-SELECT id, channel_id, message_id, message_seq, size, state, refcount, created_at, sealed_at FROM blobs WHERE id = $1
+SELECT id, channel_id, message_id, message_seq, size, content_hash, state, refcount, created_at, sealed_at FROM blobs WHERE id = $1
 `
 
 func (q *Queries) GetBlobByID(ctx context.Context, id uuid.UUID) (Blob, error) {
@@ -128,6 +130,7 @@ func (q *Queries) GetBlobByID(ctx context.Context, id uuid.UUID) (Blob, error) {
 		&i.MessageID,
 		&i.MessageSeq,
 		&i.Size,
+		&i.ContentHash,
 		&i.State,
 		&i.Refcount,
 		&i.CreatedAt,
@@ -137,7 +140,7 @@ func (q *Queries) GetBlobByID(ctx context.Context, id uuid.UUID) (Blob, error) {
 }
 
 const listBlobsByChannel = `-- name: ListBlobsByChannel :many
-SELECT id, channel_id, message_id, message_seq, size, state, refcount, created_at, sealed_at FROM blobs WHERE channel_id = $1 ORDER BY message_seq
+SELECT id, channel_id, message_id, message_seq, size, content_hash, state, refcount, created_at, sealed_at FROM blobs WHERE channel_id = $1 ORDER BY message_seq
 `
 
 func (q *Queries) ListBlobsByChannel(ctx context.Context, channelID uuid.UUID) ([]Blob, error) {
@@ -155,6 +158,7 @@ func (q *Queries) ListBlobsByChannel(ctx context.Context, channelID uuid.UUID) (
 			&i.MessageID,
 			&i.MessageSeq,
 			&i.Size,
+			&i.ContentHash,
 			&i.State,
 			&i.Refcount,
 			&i.CreatedAt,
@@ -171,7 +175,7 @@ func (q *Queries) ListBlobsByChannel(ctx context.Context, channelID uuid.UUID) (
 }
 
 const listBlobsByState = `-- name: ListBlobsByState :many
-SELECT id, channel_id, message_id, message_seq, size, state, refcount, created_at, sealed_at FROM blobs WHERE state = $1 ORDER BY created_at
+SELECT id, channel_id, message_id, message_seq, size, content_hash, state, refcount, created_at, sealed_at FROM blobs WHERE state = $1 ORDER BY created_at
 `
 
 func (q *Queries) ListBlobsByState(ctx context.Context, state int32) ([]Blob, error) {
@@ -189,6 +193,7 @@ func (q *Queries) ListBlobsByState(ctx context.Context, state int32) ([]Blob, er
 			&i.MessageID,
 			&i.MessageSeq,
 			&i.Size,
+			&i.ContentHash,
 			&i.State,
 			&i.Refcount,
 			&i.CreatedAt,
@@ -205,7 +210,7 @@ func (q *Queries) ListBlobsByState(ctx context.Context, state int32) ([]Blob, er
 }
 
 const listCollectableBlobs = `-- name: ListCollectableBlobs :many
-SELECT id, channel_id, message_id, message_seq, size, state, refcount, created_at, sealed_at FROM blobs
+SELECT id, channel_id, message_id, message_seq, size, content_hash, state, refcount, created_at, sealed_at FROM blobs
 WHERE state = $1
   AND refcount <= 0
   AND created_at < now() - interval '10 minutes'
@@ -233,6 +238,7 @@ func (q *Queries) ListCollectableBlobs(ctx context.Context, arg ListCollectableB
 			&i.MessageID,
 			&i.MessageSeq,
 			&i.Size,
+			&i.ContentHash,
 			&i.State,
 			&i.Refcount,
 			&i.CreatedAt,

@@ -2,6 +2,7 @@ package repository
 
 import (
 	"context"
+	"crypto/sha256"
 	"errors"
 	"testing"
 	"time"
@@ -16,10 +17,11 @@ import (
 func insertBlob(t *testing.T, pool *pgxpool.Pool, channelID uuid.UUID) uuid.UUID {
 	t.Helper()
 	id := uuid.New()
+	hash := sha256.Sum256(id[:])
 	_, err := pool.Exec(context.Background(),
-		`INSERT INTO blobs (id, channel_id, message_id, state, created_at)
-		 VALUES ($1, $2, $3, $4, now())`,
-		id, channelID, int64(1), int32(model.BlobStateStored),
+		`INSERT INTO blobs (id, channel_id, message_id, size, content_hash, state, created_at)
+		 VALUES ($1, $2, $3, $4, $5, $6, now())`,
+		id, channelID, int64(1), int64(0), hash[:], int32(model.BlobStateStored),
 	)
 	if err != nil {
 		t.Fatalf("insertBlob: %v", err)

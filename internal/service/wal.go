@@ -2,6 +2,7 @@ package service
 
 import (
 	"context"
+	"crypto/sha256"
 	"errors"
 	"fmt"
 	"log/slog"
@@ -490,8 +491,14 @@ func (p *Packer) uploadWorker(ctx context.Context, jobs <-chan blobJob, st *pack
 
 // persistBlob records the uploaded blob (refcount 0; extents are written at node
 // finalization) and its per-bot file_id, incrementing the channel counter.
+//
+// The blob's content_hash is the SHA-256 of job.data — the EXACT bytes handed to
+// SendDocument above and the exact bytes a reader will later download — so the
+// reader can verify integrity after every Telegram download. Every blob the
+// packer creates (including a zero-byte blob) gets a hash.
 func (p *Packer) persistBlob(ctx context.Context, job blobJob, channel *model.Channel, bot *model.Bot, res model.TGSendResult) error {
 	now := time.Now()
+	sum := sha256.Sum256(job.data)
 	return p.tx.WithTx(ctx, func(ctx context.Context) error {
 		seq, err := p.channels.IncrementCounter(ctx, channel.ID, 1)
 		if err != nil {
@@ -499,8 +506,8 @@ func (p *Packer) persistBlob(ctx context.Context, job blobJob, channel *model.Ch
 		}
 		if err := p.blobs.Create(ctx, &model.Blob{
 			ID: job.blobID, ChannelID: channel.ID, MessageID: res.MessageID,
-			MessageSeq: seq, Size: int64(len(job.data)), State: model.BlobStateStored,
-			Refcount: 0, CreatedAt: now, SealedAt: &now,
+			MessageSeq: seq, Size: int64(len(job.data)), ContentHash: sum[:],
+			State: model.BlobStateStored, Refcount: 0, CreatedAt: now, SealedAt: &now,
 		}); err != nil {
 			return err
 		}

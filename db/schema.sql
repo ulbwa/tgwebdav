@@ -2,7 +2,7 @@
 -- PostgreSQL database dump
 --
 
-\restrict rDBhJwUlth0fphcD141SfDfcFLkFfbrjEgQkpvKfnzc5GfBtJuLf1gPK4lry7ua
+\restrict Bod7k5Q970hVlhKY2Sgow1lwHbitJ4gbJ3caBv910o7TCk9poDIS8coaedBt2TB
 
 -- Dumped from database version 17.9
 -- Dumped by pg_dump version 17.9
@@ -60,6 +60,7 @@ CREATE TABLE public.blobs (
     message_id bigint NOT NULL,
     message_seq bigint DEFAULT 0 NOT NULL,
     size bigint DEFAULT 0 NOT NULL,
+    content_hash bytea NOT NULL,
     state integer NOT NULL,
     refcount bigint DEFAULT 0 NOT NULL,
     created_at timestamp with time zone DEFAULT now() NOT NULL,
@@ -583,5 +584,5 @@ ALTER TABLE ONLY public.wal_chunks
 -- PostgreSQL database dump complete
 --
 
-\unrestrict rDBhJwUlth0fphcD141SfDfcFLkFfbrjEgQkpvKfnzc5GfBtJuLf1gPK4lry7ua
+\unrestrict Bod7k5Q970hVlhKY2Sgow1lwHbitJ4gbJ3caBv910o7TCk9poDIS8coaedBt2TB
 

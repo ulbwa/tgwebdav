@@ -31,15 +31,16 @@ func NewBlobRepository(pool *pgxpool.Pool) *blobRepository {
 // column to the BlobState enum and the nullable sealed_at timestamp to a pointer.
 func blobRowToModel(row sqlc.Blob) model.Blob {
 	return model.Blob{
-		ID:         row.ID,
-		ChannelID:  row.ChannelID,
-		MessageID:  row.MessageID,
-		MessageSeq: row.MessageSeq,
-		Size:       row.Size,
-		State:      model.BlobState(row.State),
-		Refcount:   row.Refcount,
-		CreatedAt:  row.CreatedAt.Time,
-		SealedAt:   timeToPtr(row.SealedAt),
+		ID:          row.ID,
+		ChannelID:   row.ChannelID,
+		MessageID:   row.MessageID,
+		MessageSeq:  row.MessageSeq,
+		Size:        row.Size,
+		ContentHash: row.ContentHash,
+		State:       model.BlobState(row.State),
+		Refcount:    row.Refcount,
+		CreatedAt:   row.CreatedAt.Time,
+		SealedAt:    timeToPtr(row.SealedAt),
 	}
 }
 
@@ -57,17 +58,26 @@ func (r *blobRepository) Create(ctx context.Context, b *model.Blob) error {
 	if b.CreatedAt.IsZero() {
 		b.CreatedAt = time.Now()
 	}
+	// content_hash is NOT NULL; a nil hash would encode as SQL NULL and violate
+	// the constraint. Persist a non-nil (possibly empty) slice so the insert
+	// succeeds — the packer always sets a real 32-byte hash, and the reader
+	// treats an empty hash as "skip verification".
+	contentHash := b.ContentHash
+	if contentHash == nil {
+		contentHash = []byte{}
+	}
 	db := database.FromContext(ctx, r.pool)
 	err := sqlc.New(db).CreateBlob(ctx, sqlc.CreateBlobParams{
-		ID:         b.ID,
-		ChannelID:  b.ChannelID,
-		MessageID:  b.MessageID,
-		MessageSeq: b.MessageSeq,
-		Size:       b.Size,
-		State:      int32(b.State),
-		Refcount:   b.Refcount,
-		CreatedAt:  ptrToTime(&b.CreatedAt),
-		SealedAt:   ptrToTime(b.SealedAt),
+		ID:          b.ID,
+		ChannelID:   b.ChannelID,
+		MessageID:   b.MessageID,
+		MessageSeq:  b.MessageSeq,
+		Size:        b.Size,
+		ContentHash: contentHash,
+		State:       int32(b.State),
+		Refcount:    b.Refcount,
+		CreatedAt:   ptrToTime(&b.CreatedAt),
+		SealedAt:    ptrToTime(b.SealedAt),
 	})
 	if err != nil {
 		return fmt.Errorf("create blob: %w", translateError(err))

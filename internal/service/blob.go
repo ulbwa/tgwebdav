@@ -2,6 +2,8 @@ package service
 
 import (
 	"context"
+	"crypto/sha256"
+	"crypto/subtle"
 	"errors"
 	"fmt"
 	"log/slog"
@@ -230,6 +232,13 @@ type candidate struct {
 	fileID string // "" when no cached file_id is known for this bot/blob
 }
 
+// errBlobCorrupt is the internal signal that a freshly downloaded blob's bytes
+// failed SHA-256 verification against the blob's stored content_hash. It is not
+// a "message gone" outcome (corruption may be transient or bot-specific), so the
+// reader treats the candidate as failed and moves on; if every candidate's
+// download is corrupt the reader fails closed with ErrBlobUnavailable.
+var errBlobCorrupt = errors.New("blob bytes failed integrity verification")
+
 // ReadBlob resolves the full bytes of the blob identified by blobID.
 //
 // The blob must be in a readable state; otherwise ErrBlobUnavailable is
@@ -393,9 +402,11 @@ func (r *BlobReader) candidates(ctx context.Context, blob *model.Blob) ([]candid
 }
 
 // tryCandidate attempts to read the blob with one bot. It returns the bytes on
-// success. The bool result reports a definitive "message gone" outcome (only
-// set when forward-recovery returns ErrMessageNotFound); on a transient
-// failure it is false and err is the transient error.
+// success, AFTER verifying they hash to the blob's content_hash. The bool result
+// reports a definitive "message gone" outcome (only set when forward-recovery
+// returns ErrMessageNotFound); on a transient failure (rate limit, forbidden,
+// transport, or an integrity-verification failure — errBlobCorrupt) it is false
+// and err is that error. Corrupt bytes are never returned or cached.
 func (r *BlobReader) tryCandidate(
 	ctx context.Context,
 	blob *model.Blob,
@@ -408,6 +419,15 @@ func (r *BlobReader) tryCandidate(
 		data, err = r.tg.DownloadFile(ctx, c.bot, c.fileID)
 		switch {
 		case err == nil:
+			// Verify the freshly downloaded bytes before trusting them. A
+			// mismatch means this cached file_id served corrupt bytes: do NOT
+			// return or cache them. Drop the stale row and fall through to
+			// forward-recovery (the original message may still be intact via a
+			// fresh file_id), mirroring how a stale file_id is handled.
+			if verr := r.verifyIntegrity(ctx, blob, c.bot, data); verr != nil {
+				r.deleteStaleFileID(ctx, blob.ID, c.bot.ID)
+				break // out of switch → fall through to recovery below
+			}
 			return data, false, nil
 		case errors.Is(err, telegram.ErrMessageNotFound):
 			// STALE cached file_id: drop just this row and fall through to
@@ -470,8 +490,16 @@ func (r *BlobReader) tryCandidate(
 		}
 	}
 
-	// Success: clean up the forwarded copy and cache the fresh file_id.
+	// Verify the recovered bytes before trusting them. A mismatch means even a
+	// freshly-minted file_id served corrupt bytes for this bot: do NOT return,
+	// cache the bytes, or cache the file_id. Clean up the forwarded copy and
+	// treat the candidate as failed so the loop moves on.
 	r.bestEffortDelete(ctx, c.bot, channel.TGChatID, res.MessageID)
+	if verr := r.verifyIntegrity(ctx, blob, c.bot, data); verr != nil {
+		return nil, false, verr
+	}
+
+	// Success: cache the fresh file_id.
 	if upErr := r.files.Upsert(ctx, &model.BlobBotFile{
 		BlobID:       blob.ID,
 		BotID:        c.bot.ID,
@@ -485,6 +513,40 @@ func (r *BlobReader) tryCandidate(
 			slog.Any("err", upErr))
 	}
 	return data, false, nil
+}
+
+// verifyIntegrity checks that data's SHA-256 matches the blob's stored
+// content_hash. It is called after EVERY fresh Telegram download (cached
+// fast-path and forward-recovery) and BEFORE the bytes are cached or returned.
+//
+// On a match it returns nil. On a mismatch it logs an EventBlobCorrupt event at
+// WARN (with blob id + bot id) and returns errBlobCorrupt so the caller drops
+// the bytes and moves on; if every candidate is corrupt the reader fails closed
+// with ErrBlobUnavailable.
+//
+// Guard: a blob with an empty ContentHash (which should not occur post-migration
+// — the column is NOT NULL and the packer always sets a real 32-byte hash) skips
+// verification rather than rejecting otherwise-good bytes.
+func (r *BlobReader) verifyIntegrity(ctx context.Context, blob *model.Blob, bot *model.Bot, data []byte) error {
+	if len(blob.ContentHash) == 0 {
+		return nil
+	}
+	sum := sha256.Sum256(data)
+	if subtle.ConstantTimeCompare(sum[:], blob.ContentHash) == 1 {
+		return nil
+	}
+	r.logger.WarnContext(ctx, "blob: integrity verification failed, bytes corrupt",
+		slog.String("event", model.EventBlobCorrupt),
+		slog.String("blob", blob.ID.String()),
+		slog.String("bot", bot.ID.String()),
+		slog.String("expected_sha256", fmt.Sprintf("%x", blob.ContentHash)),
+		slog.String("got_sha256", fmt.Sprintf("%x", sum[:])))
+	if err := r.events.Log(ctx, model.EventBlobCorrupt,
+		fmt.Sprintf("blob download failed SHA-256 verification (bot %s)", bot.ID), blob.ID.String()); err != nil {
+		r.logger.WarnContext(ctx, "blob: log blob-corrupt event failed",
+			slog.String("blob", blob.ID.String()), slog.Any("err", err))
+	}
+	return errBlobCorrupt
 }
 
 // deleteStaleFileID drops the stale cached file_id for this blob. The contract

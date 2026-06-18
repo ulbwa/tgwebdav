@@ -1,7 +1,9 @@
 package service
 
 import (
+	"bytes"
 	"context"
+	"crypto/sha256"
 	"fmt"
 	"sort"
 	"sync"
@@ -183,6 +185,7 @@ type pkTG struct {
 	failLo, failHi int           // 1-based inclusive call range that returns an error
 	delay          time.Duration // simulated upload duration (to expose concurrency)
 	conc, maxConc  int           // current / observed-max concurrent SendDocument calls
+	uploaded       [][]byte      // exact bytes handed to each successful SendDocument
 }
 
 func (f *pkTG) SendDocument(_ context.Context, _ *model.Bot, _ int64, _ string, data []byte) (model.TGSendResult, error) {
@@ -204,6 +207,13 @@ func (f *pkTG) SendDocument(_ context.Context, _ *model.Bot, _ int64, _ string, 
 	if f.failLo != 0 && n >= f.failLo && n <= f.failHi {
 		return model.TGSendResult{}, fmt.Errorf("simulated upload failure on call %d", n)
 	}
+	// Capture the exact bytes uploaded so a test can assert the persisted blob's
+	// content_hash is the SHA-256 of these bytes.
+	cp := make([]byte, len(data))
+	copy(cp, data)
+	f.mu.Lock()
+	f.uploaded = append(f.uploaded, cp)
+	f.mu.Unlock()
 	f.s.mu.Lock()
 	defer f.s.mu.Unlock()
 	f.s.msgID++
@@ -342,6 +352,41 @@ func TestPackerPacksSmallFilesIntoOneBlob(t *testing.T) {
 		if e.BlobID != s.blobs[0].ID {
 			t.Errorf("extent blob mismatch")
 		}
+	}
+}
+
+// TestPackerComputesBlobContentHash verifies the packer stores, on each blob it
+// creates, the SHA-256 of the EXACT bytes it handed to SendDocument — so a
+// reader can later verify download integrity against it.
+func TestPackerComputesBlobContentHash(t *testing.T) {
+	s := newPackerStore()
+	// One small file with distinctive content, packed into a single blob.
+	payload := []byte("integrity-payload-zero-one-two-three")
+	s.addBuffered(int64(len(payload)), payload)
+	tg := &pkTG{s: s}
+	p, _ := newPackerTG(s, 1000, tg)
+	runUntilBlobs(t, p, s, 1)
+
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	if len(s.blobs) != 1 {
+		t.Fatalf("blobs = %d, want 1", len(s.blobs))
+	}
+	tg.mu.Lock()
+	uploaded := tg.uploaded
+	tg.mu.Unlock()
+	if len(uploaded) != 1 {
+		t.Fatalf("SendDocument captured %d uploads, want 1", len(uploaded))
+	}
+	want := sha256.Sum256(uploaded[0])
+	if !bytes.Equal(s.blobs[0].ContentHash, want[:]) {
+		t.Fatalf("blob content_hash = %x, want sha256(uploaded bytes) = %x",
+			s.blobs[0].ContentHash, want[:])
+	}
+	// And the uploaded bytes are exactly the file's bytes (so a reader downloads
+	// the same bytes the hash covers).
+	if !bytes.Equal(uploaded[0], payload) {
+		t.Fatalf("uploaded bytes = %q, want %q", uploaded[0], payload)
 	}
 }
 

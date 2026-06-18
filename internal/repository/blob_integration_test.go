@@ -1,7 +1,9 @@
 package repository
 
 import (
+	"bytes"
 	"context"
+	"crypto/sha256"
 	"errors"
 	"sync"
 	"testing"
@@ -41,14 +43,17 @@ func TestBlobRepository_CreateGetUpdate(t *testing.T) {
 	channelID := insertTestChannel(ctx, t, pool)
 
 	sealed := time.Now().UTC().Truncate(time.Microsecond)
+	// A real 32-byte SHA-256 to prove content_hash round-trips through Postgres.
+	hash := sha256.Sum256([]byte("integrity-verification-payload"))
 	b := &model.Blob{
-		ChannelID:  channelID,
-		MessageID:  42,
-		MessageSeq: 7,
-		Size:       1024,
-		State:      model.BlobStateSealed,
-		Refcount:   0,
-		SealedAt:   &sealed,
+		ChannelID:   channelID,
+		MessageID:   42,
+		MessageSeq:  7,
+		Size:        1024,
+		ContentHash: hash[:],
+		State:       model.BlobStateSealed,
+		Refcount:    0,
+		SealedAt:    &sealed,
 	}
 	if err := repo.Create(ctx, b); err != nil {
 		t.Fatalf("Create: %v", err)
@@ -66,6 +71,9 @@ func TestBlobRepository_CreateGetUpdate(t *testing.T) {
 	}
 	if got.MessageID != 42 || got.MessageSeq != 7 || got.Size != 1024 {
 		t.Fatalf("GetByID mismatch: %+v", got)
+	}
+	if !bytes.Equal(got.ContentHash, hash[:]) {
+		t.Fatalf("ContentHash = %x, want %x", got.ContentHash, hash[:])
 	}
 	if got.State != model.BlobStateSealed {
 		t.Fatalf("State = %v, want Sealed", got.State)

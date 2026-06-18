@@ -51,15 +51,16 @@ CREATE TABLE bot_channel (
 CREATE INDEX idx_bot_channel_channel ON bot_channel(channel_id);
 
 CREATE TABLE blobs (
-    id          uuid PRIMARY KEY,
-    channel_id  uuid NOT NULL REFERENCES channels(id) ON DELETE RESTRICT,
-    message_id  bigint NOT NULL,
-    message_seq bigint NOT NULL DEFAULT 0,
-    size        bigint NOT NULL DEFAULT 0,
-    state       integer NOT NULL,
-    refcount    bigint NOT NULL DEFAULT 0,
-    created_at  timestamptz NOT NULL DEFAULT now(),
-    sealed_at   timestamptz
+    id           uuid PRIMARY KEY,
+    channel_id   uuid NOT NULL REFERENCES channels(id) ON DELETE RESTRICT,
+    message_id   bigint NOT NULL,
+    message_seq  bigint NOT NULL DEFAULT 0,
+    size         bigint NOT NULL DEFAULT 0,
+    content_hash bytea NOT NULL,
+    state        integer NOT NULL,
+    refcount     bigint NOT NULL DEFAULT 0,
+    created_at   timestamptz NOT NULL DEFAULT now(),
+    sealed_at    timestamptz
 );
 CREATE INDEX idx_blobs_channel ON blobs(channel_id);
 CREATE INDEX idx_blobs_state ON blobs(state);

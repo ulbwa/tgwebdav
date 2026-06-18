@@ -19,15 +19,16 @@ type ApiToken struct {
 }
 
 type Blob struct {
-	ID         uuid.UUID
-	ChannelID  uuid.UUID
-	MessageID  int64
-	MessageSeq int64
-	Size       int64
-	State      int32
-	Refcount   int64
-	CreatedAt  pgtype.Timestamptz
-	SealedAt   pgtype.Timestamptz
+	ID          uuid.UUID
+	ChannelID   uuid.UUID
+	MessageID   int64
+	MessageSeq  int64
+	Size        int64
+	ContentHash []byte
+	State       int32
+	Refcount    int64
+	CreatedAt   pgtype.Timestamptz
+	SealedAt    pgtype.Timestamptz
 }
 
 type BlobBotFile struct {

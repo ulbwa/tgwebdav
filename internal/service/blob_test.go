@@ -2,6 +2,7 @@ package service
 
 import (
 	"context"
+	"crypto/sha256"
 	"errors"
 	"log/slog"
 	"sync"
@@ -437,6 +438,21 @@ func (h *blobHarness) addStoredBlob(messageID int64) *model.Blob {
 		ChannelID: h.channelID,
 		MessageID: messageID,
 		State:     model.BlobStateStored,
+	}
+	h.blobs.put(b)
+	return b
+}
+
+// addHashedBlob creates a stored blob whose content_hash is the SHA-256 of want
+// (the bytes a correct download must produce for verification to pass).
+func (h *blobHarness) addHashedBlob(messageID int64, want []byte) *model.Blob {
+	sum := sha256.Sum256(want)
+	b := &model.Blob{
+		ID:          uuid.New(),
+		ChannelID:   h.channelID,
+		MessageID:   messageID,
+		ContentHash: sum[:],
+		State:       model.BlobStateStored,
 	}
 	h.blobs.put(b)
 	return b
@@ -967,4 +983,175 @@ func TestReadBlob_FastPathPreferredOverNonCachedBot(t *testing.T) {
 		t.Fatalf("expected no forwards (fast path), got %v", h.tg.forwardCalls)
 	}
 	_ = plainBot
+}
+
+// ---- integrity verification ------------------------------------------------
+
+// TestReadBlob_VerifiedDownloadReturnedAndCached covers case (a): a fast-path
+// download whose bytes hash-match the blob's content_hash is returned AND cached.
+func TestReadBlob_VerifiedDownloadReturnedAndCached(t *testing.T) {
+	h := newBlobHarness(t)
+	bot := h.addBot("goodbot")
+	want := []byte("intact-blob-bytes")
+	blob := h.addHashedBlob(10, want)
+
+	const fileID = "FILE_GOOD"
+	if err := h.files.Upsert(context.Background(), &model.BlobBotFile{
+		BlobID: blob.ID, BotID: bot.ID, FileID: fileID,
+	}); err != nil {
+		t.Fatal(err)
+	}
+	h.tg.downloadByFileID[fileID] = tgResult{data: want}
+
+	got, err := h.reader.ReadBlob(context.Background(), blob.ID)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if string(got) != string(want) {
+		t.Fatalf("got %q, want %q", got, want)
+	}
+	// Verified bytes were cached.
+	cached, ok := h.cache.Get(blob.ID)
+	if !ok || string(cached) != string(want) {
+		t.Fatalf("expected verified bytes cached, got cached=%q ok=%v", cached, ok)
+	}
+	// No corruption events on a clean download.
+	if n := h.events.count(model.EventBlobCorrupt); n != 0 {
+		t.Fatalf("expected no EventBlobCorrupt, got %d", n)
+	}
+}
+
+// TestReadBlob_CorruptFastPathFallsThroughToGoodBot covers case (b): the
+// fast-path bot returns CORRUPT bytes (wrong hash). They must NOT be cached, the
+// cached file_id must be invalidated, an EventBlobCorrupt must be logged, and the
+// reader must fall through (this bot's recovery is also corrupt) to another bot
+// whose recovery returns good bytes → success.
+func TestReadBlob_CorruptFastPathFallsThroughToGoodBot(t *testing.T) {
+	h := newBlobHarness(t)
+	badBot := h.addBot("badbot")
+	goodBot := h.addBot("goodbot")
+	want := []byte("the-only-correct-bytes")
+	blob := h.addHashedBlob(10, want)
+
+	// badBot has a cached file_id that serves corrupt bytes.
+	const corruptID = "FILE_CORRUPT"
+	if err := h.files.Upsert(context.Background(), &model.BlobBotFile{
+		BlobID: blob.ID, BotID: badBot.ID, FileID: corruptID,
+	}); err != nil {
+		t.Fatal(err)
+	}
+	h.tg.downloadByFileID[corruptID] = tgResult{data: []byte("CORRUPT-bytes-wrong")}
+	// badBot's forward-recovery also yields corrupt bytes.
+	const badFreshID = "FILE_BAD_FRESH"
+	h.tg.forwardByBot[badBot.Username] = tgForward{res: model.TGSendResult{MessageID: 91, FileID: badFreshID}}
+	h.tg.downloadByFileID[badFreshID] = tgResult{data: []byte("still-CORRUPT")}
+
+	// goodBot recovers via forward with the correct bytes.
+	const goodFreshID = "FILE_GOOD_FRESH"
+	h.tg.forwardByBot[goodBot.Username] = tgForward{res: model.TGSendResult{MessageID: 92, FileID: goodFreshID}}
+	h.tg.downloadByFileID[goodFreshID] = tgResult{data: want}
+
+	got, err := h.reader.ReadBlob(context.Background(), blob.ID)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if string(got) != string(want) {
+		t.Fatalf("got %q, want %q", got, want)
+	}
+	// The corrupt cached file_id was invalidated (deleteStaleFileID removes all
+	// of this blob's cached file_ids); only goodBot's fresh, verified file_id
+	// remains.
+	files, _ := h.files.ListByBlob(context.Background(), blob.ID)
+	if len(files) != 1 || files[0].FileID != goodFreshID {
+		t.Fatalf("expected only the good fresh file_id cached, got %+v", files)
+	}
+	// Two corrupt downloads happened (cached + badBot recovery) → two events.
+	if n := h.events.count(model.EventBlobCorrupt); n != 2 {
+		t.Fatalf("expected 2 EventBlobCorrupt, got %d", n)
+	}
+	// Only the verified bytes were cached.
+	cached, ok := h.cache.Get(blob.ID)
+	if !ok || string(cached) != string(want) {
+		t.Fatalf("expected only verified bytes cached, got cached=%q ok=%v", cached, ok)
+	}
+	// Blob was NOT perm-deleted (corruption is not "message gone").
+	b, _ := h.blobs.GetByID(context.Background(), blob.ID)
+	if b.State != model.BlobStateStored {
+		t.Fatalf("expected blob still stored, got %s", b.State)
+	}
+}
+
+// TestReadBlob_AllCorruptFailsClosed covers case (c): every candidate returns
+// corrupt bytes → ReadBlob returns ErrBlobUnavailable and nothing is cached.
+func TestReadBlob_AllCorruptFailsClosed(t *testing.T) {
+	h := newBlobHarness(t)
+	b1 := h.addBot("b1")
+	b2 := h.addBot("b2")
+	want := []byte("never-served-correctly")
+	blob := h.addHashedBlob(10, want)
+
+	// b1 fast path serves corrupt; its recovery also corrupt.
+	const c1 = "FID_C1"
+	if err := h.files.Upsert(context.Background(), &model.BlobBotFile{
+		BlobID: blob.ID, BotID: b1.ID, FileID: c1,
+	}); err != nil {
+		t.Fatal(err)
+	}
+	h.tg.downloadByFileID[c1] = tgResult{data: []byte("corrupt-1")}
+	h.tg.forwardByBot[b1.Username] = tgForward{res: model.TGSendResult{MessageID: 1, FileID: "FID_C1_FRESH"}}
+	h.tg.downloadByFileID["FID_C1_FRESH"] = tgResult{data: []byte("corrupt-1-fresh")}
+
+	// b2 recovery also corrupt.
+	h.tg.forwardByBot[b2.Username] = tgForward{res: model.TGSendResult{MessageID: 2, FileID: "FID_C2_FRESH"}}
+	h.tg.downloadByFileID["FID_C2_FRESH"] = tgResult{data: []byte("corrupt-2-fresh")}
+
+	_, err := h.reader.ReadBlob(context.Background(), blob.ID)
+	if !errors.Is(err, ErrBlobUnavailable) {
+		t.Fatalf("expected ErrBlobUnavailable, got %v", err)
+	}
+	// Nothing cached.
+	if _, ok := h.cache.Get(blob.ID); ok {
+		t.Fatal("expected nothing cached when all downloads are corrupt")
+	}
+	// Blob must NOT be perm-deleted: corruption may be transient/recoverable.
+	b, _ := h.blobs.GetByID(context.Background(), blob.ID)
+	if b.State != model.BlobStateStored {
+		t.Fatalf("expected blob still stored (corruption is not message-gone), got %s", b.State)
+	}
+	// An EventBlobCorrupt was logged for each corrupt download.
+	if n := h.events.count(model.EventBlobCorrupt); n == 0 {
+		t.Fatal("expected at least one EventBlobCorrupt to be logged")
+	}
+}
+
+// TestReadBlob_CacheHitNotReverified covers case (d): a cache HIT is served
+// without re-verification. We seed the cache with bytes that do NOT match the
+// stored content_hash; the cache-hit path must still return them (it bypasses
+// verification, because cached bytes were verified before being cached).
+func TestReadBlob_CacheHitNotReverified(t *testing.T) {
+	h := newBlobHarness(t)
+	h.addBot("b")
+	// content_hash points at "real-bytes"...
+	blob := h.addHashedBlob(10, []byte("real-bytes"))
+	// ...but the cache holds different bytes (as if hash were pointed elsewhere).
+	cached := []byte("pre-verified-cached-bytes")
+	if err := h.cache.Put(blob.ID, cached); err != nil {
+		t.Fatal(err)
+	}
+
+	got, err := h.reader.ReadBlob(context.Background(), blob.ID)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if string(got) != string(cached) {
+		t.Fatalf("cache hit returned %q, want %q (cache-hit path must not re-verify)", got, cached)
+	}
+	// No Telegram traffic and no corruption events: the hit short-circuited.
+	if len(h.tg.downloadCalls) != 0 || len(h.tg.forwardCalls) != 0 {
+		t.Fatalf("expected no telegram calls on cache hit, got download=%v forward=%v",
+			h.tg.downloadCalls, h.tg.forwardCalls)
+	}
+	if n := h.events.count(model.EventBlobCorrupt); n != 0 {
+		t.Fatalf("cache-hit path must not verify, got %d EventBlobCorrupt", n)
+	}
 }

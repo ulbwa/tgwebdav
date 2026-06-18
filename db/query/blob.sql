@@ -1,8 +1,8 @@
 -- name: CreateBlob :exec
 INSERT INTO blobs (
-    id, channel_id, message_id, message_seq, size, state, refcount, created_at, sealed_at
+    id, channel_id, message_id, message_seq, size, content_hash, state, refcount, created_at, sealed_at
 ) VALUES (
-    $1, $2, $3, $4, $5, $6, $7, $8, $9
+    $1, $2, $3, $4, $5, $6, $7, $8, $9, $10
 );
 
 -- name: GetBlobByID :one
