@@ -122,8 +122,8 @@ func TestDefaultSettings(t *testing.T) {
 	if s.BlobMaxSize != 19*1024*1024 {
 		t.Errorf("BlobMaxSize = %d, want %d", s.BlobMaxSize, 19*1024*1024)
 	}
-	if s.WALIdleTimeout != 5*time.Second {
-		t.Errorf("WALIdleTimeout = %v, want 5s", s.WALIdleTimeout)
+	if s.WALIdleTimeout != 60*time.Second {
+		t.Errorf("WALIdleTimeout = %v, want 60s", s.WALIdleTimeout)
 	}
 	if s.MaxFileSize != 0 {
 		t.Errorf("MaxFileSize = %d, want 0 (unlimited)", s.MaxFileSize)
