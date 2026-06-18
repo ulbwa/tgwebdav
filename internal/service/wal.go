@@ -38,7 +38,7 @@ type packerWALStore interface {
 // packerBlobStore is the slice of the blob repository the packer needs.
 type packerBlobStore interface {
 	Create(ctx context.Context, b *model.Blob) error
-	AddRefcount(ctx context.Context, id uuid.UUID, delta int64) error
+	AddRefcounts(ctx context.Context, deltas map[uuid.UUID]int64) error
 }
 
 // packerExtentStore is the slice of the extent repository the packer needs.
@@ -536,10 +536,14 @@ func (p *Packer) finalize(ctx context.Context, t *track) {
 			if err := p.extents.CreateBatch(ctx, st.extents); err != nil {
 				return err
 			}
+			// One batched UPDATE: a blob referenced by N of this node's extents is
+			// bumped by N (instead of N separate AddRefcount round-trips).
+			deltas := make(map[uuid.UUID]int64, len(st.extents))
 			for _, e := range st.extents {
-				if err := p.blobs.AddRefcount(ctx, e.BlobID, 1); err != nil {
-					return err
-				}
+				deltas[e.BlobID]++
+			}
+			if err := p.blobs.AddRefcounts(ctx, deltas); err != nil {
+				return err
 			}
 		}
 		return p.wal.DeleteByNode(ctx, st.node.ID)

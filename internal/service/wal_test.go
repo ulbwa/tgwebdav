@@ -14,7 +14,6 @@ import (
 	"github.com/google/uuid"
 
 	"github.com/ulbwa/tgwebdav/internal/model"
-	"github.com/ulbwa/tgwebdav/internal/repository"
 )
 
 // --- shared in-memory store backing the packer fakes -----------------------
@@ -133,16 +132,18 @@ func (f *pkBlobs) Create(_ context.Context, b *model.Blob) error {
 	return nil
 }
 
-func (f *pkBlobs) AddRefcount(_ context.Context, id uuid.UUID, delta int64) error {
+func (f *pkBlobs) AddRefcounts(_ context.Context, deltas map[uuid.UUID]int64) error {
 	f.s.mu.Lock()
 	defer f.s.mu.Unlock()
-	for _, b := range f.s.blobs {
-		if b.ID == id {
-			b.Refcount += delta
-			return nil
+	for id, delta := range deltas {
+		for _, b := range f.s.blobs {
+			if b.ID == id {
+				b.Refcount += delta
+				break
+			}
 		}
 	}
-	return repository.ErrNotFound
+	return nil
 }
 
 type pkBlobFiles struct{}

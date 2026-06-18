@@ -125,6 +125,40 @@ func (q *Queries) ListBots(ctx context.Context) ([]Bot, error) {
 	return items, nil
 }
 
+const listBotsByIDs = `-- name: ListBotsByIDs :many
+SELECT id, username, token_sha, token_enc, enabled, unavailable_until, created_at FROM bots WHERE id = ANY($1::uuid[])
+`
+
+// Batch load bots by id (one round-trip instead of GetByID per member bot on the
+// blob read candidate path).
+func (q *Queries) ListBotsByIDs(ctx context.Context, ids []uuid.UUID) ([]Bot, error) {
+	rows, err := q.db.Query(ctx, listBotsByIDs, ids)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	var items []Bot
+	for rows.Next() {
+		var i Bot
+		if err := rows.Scan(
+			&i.ID,
+			&i.Username,
+			&i.TokenSha,
+			&i.TokenEnc,
+			&i.Enabled,
+			&i.UnavailableUntil,
+			&i.CreatedAt,
+		); err != nil {
+			return nil, err
+		}
+		items = append(items, i)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, err
+	}
+	return items, nil
+}
+
 const setBotUnavailableUntil = `-- name: SetBotUnavailableUntil :execrows
 UPDATE bots SET unavailable_until = $2 WHERE id = $1
 `

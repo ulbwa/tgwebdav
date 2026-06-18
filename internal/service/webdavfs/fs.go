@@ -76,9 +76,9 @@ type walStore interface {
 }
 
 // blobStore mutates blob metadata. The filesystem only adjusts refcounts (COPY
-// bumps, DELETE/truncate release).
+// bumps, DELETE/truncate release), in one batched round-trip per operation.
 type blobStore interface {
-	AddRefcount(ctx context.Context, id uuid.UUID, delta int64) error
+	AddRefcounts(ctx context.Context, deltas map[uuid.UUID]int64) error
 }
 
 // blobReader resolves the full bytes of a stored blob, transparently using the
@@ -418,18 +418,21 @@ func (f *FileSystem) truncateNode(ctx context.Context, node *model.Node) error {
 }
 
 // releaseExtents decrements the refcount of every blob a node's extents
-// reference (one decrement per extent).
+// reference, aggregating per blob so a blob touched by N extents is decremented
+// by N in one batched UPDATE (one round-trip instead of N).
 func (f *FileSystem) releaseExtents(ctx context.Context, nodeID uuid.UUID) error {
 	extents, err := f.extents.ListByNode(ctx, nodeID)
 	if err != nil {
 		return err
 	}
-	for _, e := range extents {
-		if err := f.blobMeta.AddRefcount(ctx, e.BlobID, -1); err != nil {
-			return err
-		}
+	if len(extents) == 0 {
+		return nil
 	}
-	return nil
+	deltas := make(map[uuid.UUID]int64, len(extents))
+	for _, e := range extents {
+		deltas[e.BlobID]--
+	}
+	return f.blobMeta.AddRefcounts(ctx, deltas)
 }
 
 // RemoveAll implements webdav.FileSystem (DELETE).

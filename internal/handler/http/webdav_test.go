@@ -207,10 +207,12 @@ func (s *memFSStore) ReadRange(_ context.Context, nodeID uuid.UUID, offset, leng
 
 // blobStore.
 
-func (s *memFSStore) AddRefcount(_ context.Context, id uuid.UUID, delta int64) error {
+func (s *memFSStore) AddRefcounts(_ context.Context, deltas map[uuid.UUID]int64) error {
 	s.mu.Lock()
 	defer s.mu.Unlock()
-	s.refcount[id] += delta
+	for id, delta := range deltas {
+		s.refcount[id] += delta
+	}
 	return nil
 }
 

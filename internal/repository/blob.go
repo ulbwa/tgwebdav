@@ -151,6 +151,31 @@ func (r *blobRepository) AddRefcount(ctx context.Context, id uuid.UUID, delta in
 	return nil
 }
 
+// AddRefcounts atomically applies a per-blob refcount delta in a single
+// statement. deltas maps a blob id to the (signed) amount to add to its
+// refcount; an id appearing N times across a node's extents must be passed once
+// with its aggregated delta. It collapses the per-extent AddRefcount loop (one
+// round-trip per extent) into one round-trip. An empty map is a no-op.
+func (r *blobRepository) AddRefcounts(ctx context.Context, deltas map[uuid.UUID]int64) error {
+	if len(deltas) == 0 {
+		return nil
+	}
+	ids := make([]uuid.UUID, 0, len(deltas))
+	ds := make([]int64, 0, len(deltas))
+	for id, d := range deltas {
+		ids = append(ids, id)
+		ds = append(ds, d)
+	}
+	db := database.FromContext(ctx, r.pool)
+	if err := sqlc.New(db).AddBlobRefcounts(ctx, sqlc.AddBlobRefcountsParams{
+		Ids:    ids,
+		Deltas: ds,
+	}); err != nil {
+		return fmt.Errorf("add blob refcounts: %w", translateError(err))
+	}
+	return nil
+}
+
 // ListByChannel returns every blob in a channel ordered by message_seq.
 func (r *blobRepository) ListByChannel(ctx context.Context, channelID uuid.UUID) ([]model.Blob, error) {
 	db := database.FromContext(ctx, r.pool)

@@ -82,6 +82,20 @@ func (f *fakeBots) put(b *model.Bot) {
 	f.mu.Unlock()
 }
 
+func (f *fakeBots) ListByIDs(_ context.Context, ids []uuid.UUID) ([]model.Bot, error) {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	out := make([]model.Bot, 0, len(ids))
+	for _, id := range ids {
+		if b, ok := f.items[id]; ok {
+			out = append(out, *b)
+		}
+	}
+	return out, nil
+}
+
+// GetByID is a test-only helper used by assertions (the reader interface uses
+// the batched ListByIDs).
 func (f *fakeBots) GetByID(_ context.Context, id uuid.UUID) (*model.Bot, error) {
 	f.mu.Lock()
 	defer f.mu.Unlock()

@@ -298,6 +298,17 @@ func (s *fakeStore) ReadRange(_ context.Context, nodeID uuid.UUID, offset, lengt
 
 // blobStore.
 
+func (s *fakeStore) AddRefcounts(_ context.Context, deltas map[uuid.UUID]int64) error {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	for id, delta := range deltas {
+		s.refcount[id] += delta
+	}
+	return nil
+}
+
+// AddRefcount is a single-blob test helper (the production blobStore interface
+// is the batched AddRefcounts).
 func (s *fakeStore) AddRefcount(_ context.Context, id uuid.UUID, delta int64) error {
 	s.mu.Lock()
 	defer s.mu.Unlock()

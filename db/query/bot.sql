@@ -20,6 +20,11 @@ DELETE FROM bots WHERE id = $1;
 -- name: GetBotByID :one
 SELECT * FROM bots WHERE id = $1;
 
+-- name: ListBotsByIDs :many
+-- Batch load bots by id (one round-trip instead of GetByID per member bot on the
+-- blob read candidate path).
+SELECT * FROM bots WHERE id = ANY(sqlc.arg(ids)::uuid[]);
+
 -- name: GetBotByUsername :one
 SELECT * FROM bots WHERE username = $1;
 

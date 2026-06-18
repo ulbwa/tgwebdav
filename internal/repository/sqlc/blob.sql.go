@@ -31,6 +31,32 @@ func (q *Queries) AddBlobRefcount(ctx context.Context, arg AddBlobRefcountParams
 	return refcount, err
 }
 
+const addBlobRefcounts = `-- name: AddBlobRefcounts :exec
+UPDATE blobs AS b
+SET refcount = b.refcount + d.delta
+FROM (
+    SELECT
+        unnest($1::uuid[])    AS id,
+        unnest($2::bigint[]) AS delta
+) AS d
+WHERE b.id = d.id
+`
+
+type AddBlobRefcountsParams struct {
+	Ids    []uuid.UUID
+	Deltas []int64
+}
+
+// Applies a per-blob refcount delta in one statement. ids and deltas are
+// parallel arrays (the i-th delta applies to the i-th id, which must be distinct
+// and carry its already-aggregated delta). This collapses the per-extent
+// AddRefcount loop (one round-trip per extent) into one round-trip per
+// finalize / COPY / release.
+func (q *Queries) AddBlobRefcounts(ctx context.Context, arg AddBlobRefcountsParams) error {
+	_, err := q.db.Exec(ctx, addBlobRefcounts, arg.Ids, arg.Deltas)
+	return err
+}
+
 const countBlobs = `-- name: CountBlobs :one
 SELECT count(*) FROM blobs
 `

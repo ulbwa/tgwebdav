@@ -152,8 +152,13 @@ func (f *FileSystem) copyNode(ctx context.Context, userID uuid.UUID, srcNode *mo
 		if err := f.extents.CopyForNode(ctx, srcNode.ID, newID); err != nil {
 			return err
 		}
-		for _, e := range srcExtents {
-			if err := f.blobMeta.AddRefcount(ctx, e.BlobID, 1); err != nil {
+		// One batched UPDATE: a blob shared by N copied extents is bumped by N.
+		if len(srcExtents) > 0 {
+			deltas := make(map[uuid.UUID]int64, len(srcExtents))
+			for _, e := range srcExtents {
+				deltas[e.BlobID]++
+			}
+			if err := f.blobMeta.AddRefcounts(ctx, deltas); err != nil {
 				return err
 			}
 		}

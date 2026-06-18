@@ -217,6 +217,29 @@ func (r *BotRepository) List(ctx context.Context) ([]model.Bot, error) {
 	return out, nil
 }
 
+// ListByIDs batch-loads (and decrypts) the bots with the given ids in one
+// round-trip. Missing ids are simply absent from the result. The order is not
+// guaranteed. An empty input yields an empty slice without a query.
+func (r *BotRepository) ListByIDs(ctx context.Context, ids []uuid.UUID) ([]model.Bot, error) {
+	if len(ids) == 0 {
+		return nil, nil
+	}
+	db := database.FromContext(ctx, r.pool)
+	ms, err := sqlc.New(db).ListBotsByIDs(ctx, ids)
+	if err != nil {
+		return nil, fmt.Errorf("list bots by ids: %w", translateError(err))
+	}
+	out := make([]model.Bot, len(ms))
+	for i := range ms {
+		b, err := r.hydrate(ms[i])
+		if err != nil {
+			return nil, fmt.Errorf("list bots by ids: %w", err)
+		}
+		out[i] = *b
+	}
+	return out, nil
+}
+
 // SetUnavailableUntil records (or clears, with nil) a bot's retry-after window.
 func (r *BotRepository) SetUnavailableUntil(ctx context.Context, id uuid.UUID, until *time.Time) error {
 	db := database.FromContext(ctx, r.pool)

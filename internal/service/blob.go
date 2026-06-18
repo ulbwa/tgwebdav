@@ -15,7 +15,6 @@ import (
 
 	"github.com/ulbwa/tgwebdav/internal/client/telegram"
 	"github.com/ulbwa/tgwebdav/internal/model"
-	"github.com/ulbwa/tgwebdav/internal/repository"
 )
 
 // ---- tiny dependency interfaces (Rule 5) -----------------------------------
@@ -38,7 +37,7 @@ type readerChannelStore interface {
 
 // readerBotStore is the slice of the bot repository the reader needs.
 type readerBotStore interface {
-	GetByID(ctx context.Context, id uuid.UUID) (*model.Bot, error)
+	ListByIDs(ctx context.Context, ids []uuid.UUID) ([]model.Bot, error)
 	SetUnavailableUntil(ctx context.Context, id uuid.UUID, until *time.Time) error
 }
 
@@ -346,24 +345,37 @@ func (r *BlobReader) candidates(ctx context.Context, blob *model.Blob) ([]candid
 		return nil, fmt.Errorf("blob: list bot-channels for %s: %w", blob.ChannelID, err)
 	}
 
-	// Resolve member, enabled, available bots keyed by id.
-	usable := make(map[uuid.UUID]*model.Bot)
-	order := make([]uuid.UUID, 0, len(bcs))
+	// Collect distinct member bot ids and batch-load them in one round-trip
+	// (instead of one GetByID per member).
+	memberIDs := make([]uuid.UUID, 0, len(bcs))
+	seenMember := make(map[uuid.UUID]bool, len(bcs))
 	for _, bc := range bcs {
-		if !bc.Member {
+		if !bc.Member || seenMember[bc.BotID] {
 			continue
 		}
-		bot, err := r.bots.GetByID(ctx, bc.BotID)
-		if err != nil {
-			if errors.Is(err, repository.ErrNotFound) {
-				continue
-			}
-			return nil, fmt.Errorf("blob: get bot %s: %w", bc.BotID, err)
+		seenMember[bc.BotID] = true
+		memberIDs = append(memberIDs, bc.BotID)
+	}
+	loaded, err := r.bots.ListByIDs(ctx, memberIDs)
+	if err != nil {
+		return nil, fmt.Errorf("blob: list member bots for %s: %w", blob.ChannelID, err)
+	}
+	botByID := make(map[uuid.UUID]*model.Bot, len(loaded))
+	for i := range loaded {
+		botByID[loaded[i].ID] = &loaded[i]
+	}
+
+	// Resolve member, enabled, available bots keyed by id, preserving the stable
+	// (member-listing) order. A member with no loaded bot row is silently skipped,
+	// matching the previous ErrNotFound handling.
+	usable := make(map[uuid.UUID]*model.Bot)
+	order := make([]uuid.UUID, 0, len(memberIDs))
+	for _, id := range memberIDs {
+		bot, ok := botByID[id]
+		if !ok {
+			continue
 		}
 		if !bot.Available(now) {
-			continue
-		}
-		if _, seen := usable[bot.ID]; seen {
 			continue
 		}
 		usable[bot.ID] = bot

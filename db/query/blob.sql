@@ -28,6 +28,21 @@ SET refcount = refcount + $2
 WHERE id = $1
 RETURNING refcount;
 
+-- name: AddBlobRefcounts :exec
+-- Applies a per-blob refcount delta in one statement. ids and deltas are
+-- parallel arrays (the i-th delta applies to the i-th id, which must be distinct
+-- and carry its already-aggregated delta). This collapses the per-extent
+-- AddRefcount loop (one round-trip per extent) into one round-trip per
+-- finalize / COPY / release.
+UPDATE blobs AS b
+SET refcount = b.refcount + d.delta
+FROM (
+    SELECT
+        unnest(sqlc.arg(ids)::uuid[])    AS id,
+        unnest(sqlc.arg(deltas)::bigint[]) AS delta
+) AS d
+WHERE b.id = d.id;
+
 -- name: ListBlobsByChannel :many
 SELECT * FROM blobs WHERE channel_id = $1 ORDER BY message_seq;
 
