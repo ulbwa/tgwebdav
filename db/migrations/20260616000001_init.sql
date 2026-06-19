@@ -147,8 +147,9 @@ CREATE TABLE settings (
     default_eviction_threshold bigint NOT NULL DEFAULT 900000,
     updated_at                 timestamptz NOT NULL DEFAULT now()
 );
-INSERT INTO settings (id, blob_max_size, wal_idle_timeout_ms, max_file_size, default_eviction_threshold)
-VALUES (1, 19922944, 5000, 0, 900000);
+-- No seed row: the single settings row is created on first PUT /api/v1/settings.
+-- Until then GetSettings returns the built-in defaults (model.DefaultSettings),
+-- so code is the single source of truth and the seed can never drift from it.
 
 -- migrate:down
 
