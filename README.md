@@ -4,6 +4,10 @@
 
 A single binary serves a per-user, isolated WebDAV namespace and an administrative Management API over one PostgreSQL database, packing file content into Telegram channel messages (blobs) through the official Bot API. Writes land in a Postgres write-ahead buffer and become durable and readable immediately; a background worker asynchronously packs them into immutable, SHA-256-verified blobs and uploads those to Telegram, after which the bytes live only in Telegram and Postgres retains a few hundred bytes of metadata per file. A local disk LRU cache fronts reads.
 
+[![Telegram — unlimited cloud storage](https://img.shields.io/badge/Telegram-unlimited%20cloud%20storage-26A5E4?logo=telegram&logoColor=white&style=for-the-badge)](https://x.com/telegram/status/1407684867790409735)
+
+Telegram itself [advertises **unlimited cloud storage**](https://x.com/telegram/status/1407684867790409735) (the badge above links to their announcement). tgwebdav turns that effectively-infinite space into a mountable WebDAV drive — which is what makes it genuinely cool. It is also exactly why it's an **experiment** and not a guarantee:
+
 > ⚠️ **Experimental — do not trust it as authoritative storage.** Telegram is not a filesystem. A channel evicts its oldest messages once it grows past roughly one million messages, deletions are irreversible, and bot/channel access can be revoked out from under you. tgwebdav degrades gracefully (availability flags, integrity verification, cross-bot recovery, cascade rules) but is best treated as an **experiment or a cold archive**, never as primary or authoritative storage. Keep an independent copy of anything you cannot afford to lose.
 
 ---
