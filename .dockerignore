@@ -1,0 +1,14 @@
+# Keep the build context small and never ship secrets or build artifacts.
+.git
+.github
+.gitignore
+dist
+docs
+scripts
+docker-compose.yml
+Taskfile.yml
+Makefile
+*.md
+.env
+.env.*
+**/*_test.go

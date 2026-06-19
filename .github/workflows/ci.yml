@@ -1,0 +1,44 @@
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+    branches: [main]
+
+permissions:
+  contents: read
+
+concurrency:
+  group: ci-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  test:
+    name: build & test
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-go@v5
+        with:
+          go-version-file: go.mod
+          cache: true
+      - run: go build ./...
+      - run: go vet ./...
+      # Repository tests spin real Postgres via testcontainers; the runner has Docker.
+      - name: go test -race
+        env:
+          TESTCONTAINERS_RYUK_DISABLED: "true"
+        run: go test ./... -race -count=1
+
+  lint:
+    name: golangci-lint
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-go@v5
+        with:
+          go-version-file: go.mod
+          cache: true
+      # Same linter the repo uses (Taskfile `task lint`).
+      - run: go run github.com/golangci/golangci-lint/v2/cmd/golangci-lint@latest run ./...
